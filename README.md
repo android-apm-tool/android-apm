@@ -2,10 +2,11 @@
 
 Android 프로젝트에 플러그인을 적용해 화면과 접근 경로를 분석하고, 실제 디바이스에서 측정한 실행 흐름과 자원 사용량을 localhost에서 확인하는 도구.
 
-현재는 설계 단계다. 이 저장소에는 설계 문서만 있으며 플러그인, 수집기, 서버, 대시보드는 아직 구현하지 않았다. 문서에 등장하는 작업 이름과 데이터 형식은 구현 제안이다.
+현재는 설계와 플러그인 개발 기반을 구성한 단계다. Gradle 플러그인, K2 IR 연결 확인용 컴파일러 플러그인, Compose·Nav3 샘플 앱을 포함한다. 화면 카탈로그 수집기, 실행 에이전트, 서버, 대시보드는 아직 구현하지 않았다. 설계 문서의 수집·병합·실행 작업과 데이터 형식은 구현 제안이다.
 
 ## 시작하기
 
+- [플러그인 개발 환경과 빌드 방법](docs/07-plugin-development.md)
 - [설계 문서 목차](docs/README.md)
 - [제품 요구사항과 확정된 화면 구성](docs/01-product-requirements.md)
 - [시스템 구조](docs/02-system-architecture.md)
@@ -13,6 +14,16 @@ Android 프로젝트에 플러그인을 적용해 화면과 접근 경로를 분
 - [화면 전환 관계 분석](docs/04-navigation-transition-analysis.md)
 - [데이터 모델](docs/05-data-model.md)
 - [검증 계획과 구현 순서](docs/06-validation-plan.md)
+
+JDK 17에서 플러그인을 빌드하고 테스트한다. 샘플 검증에는 Android SDK 36과 `ANDROID_HOME` 설정이 추가로 필요하다.
+
+```bash
+./gradlew build
+./gradlew -p samples/compose-app :app:apmDoctor
+python3 scripts/verify-bootstrap.py
+```
+
+개발용 IR probe는 기본 비활성 상태이며 `-Papm.irProbe=true`로 debug 컴파일에서 확인한다. 샘플은 included build로 로컬 플러그인을 사용한다. 아직 외부 배포한 플러그인이 아니다.
 
 ## 대상
 
