@@ -9,7 +9,7 @@ Android 프로젝트에 플러그인을 적용해 화면과 접근 경로를 분
 - [설계 문서 목차](docs/README.md)
 - [제품 요구사항과 확정된 화면 구성](docs/01-product-requirements.md)
 - [시스템 구조](docs/02-system-architecture.md)
-- [IR 기반 Nav3 entry 수집](docs/03-nav3-entry-discovery.md)
+- [IR 기반 화면 발견과 Nav3 연결](docs/03-nav3-entry-discovery.md)
 - [화면 전환 관계 분석](docs/04-navigation-transition-analysis.md)
 - [데이터 모델](docs/05-data-model.md)
 - [검증 계획과 구현 순서](docs/06-validation-plan.md)
@@ -28,8 +28,10 @@ Android 프로젝트에 플러그인을 적용해 화면과 접근 경로를 분
 
 Kotlin·Compose·Nav3의 구체적인 지원 버전은 호환성 검증 후 고정한다. 위 조건만으로 모든 버전과 모든 사용자 정의 탐색 코드를 지원한다고 간주하지 않는다.
 
+화면 발견은 전체 Composable 선언 수집, Compose UI 진입점 추적, Nav3 키·콘텐츠 연결을 결합한다. Nav3 밖의 화면 후보와 연결이 미해결인 선언도 보존한다. SDUI를 제외한 지원 범위의 화면 정의 발견률 **99% 이상을 검증 목표**로 두며, 아직 측정한 결과는 없다. 화면 발견률, 연결 해석률, 전환 경로 발견률과 오탐은 [검증 계획](docs/06-validation-plan.md)에 따라 따로 평가한다.
+
 ## 디자인
 
 [Figma 최종 확정안](https://www.figma.com/design/qGdhVOiSGSh9VUAMFfl40h/APM?node-id=132-12445)
 
-설계 기준일: 2026-10-11.
+설계 기준일: 2026-10-12.

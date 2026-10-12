@@ -11,12 +11,18 @@
 | `catalogId` | 입력 지문과 분석기 버전으로 식별한 카탈로그 |
 | `buildId` | 실제 계측 앱 빌드 |
 | `moduleId` | included build 등까지 구분하는 모듈 식별자 |
+| `composableDeclarationId` | Composable 함수·람다 선언. 화면 ID와 구분 |
+| `uiRootId` | Compose UI 진입점의 정적 선언 |
+| `uiRegionDefinitionId`, `uiRegionInstanceId` | 콘텐츠를 선택·표시하는 영역의 정적 정의와 실행 인스턴스 |
+| `contentBindingId` | 콘텐츠가 호출·슬롯·분기·provider에 연결되는 사용 맥락 |
+| `screenCandidateId`, `screenDefinitionId` | 화면 후보와 분류 근거가 있는 화면 정의 |
 | `declarationId` | 특정 카탈로그의 entry 등록 지점 |
 | `providerId` | 정적 provider 정의 지점 |
 | `bindingId` | provider와 등록 선언의 연결 |
 | `hostDefinitionId` | 정적으로 식별한 NavDisplay 지점 |
 | `sessionId`, `deviceId` | 측정 세션과 기기 |
-| `hostInstanceId`, `entryInstanceId` | 실행 중 host와 화면 인스턴스 |
+| `hostInstanceId`, `entryInstanceId` | 실행 중 Nav3 host와 entry 인스턴스 |
+| `screenInstanceId` | Nav3 밖 화면도 포함하는 실행 인스턴스. entryInstanceId는 해당할 때 연결 |
 | `causeId` | 행동부터 비동기 작업·전환까지 연결하는 인과 식별자 |
 | `invocationId` | 함수 호출 한 번의 식별자 |
 | `clockDomainId` | 시각이 속한 시계 기준 |
@@ -29,15 +35,28 @@
 
 | 모델 | 주요 필드 |
 | --- | --- |
+| `ComposableDeclaration` | composableDeclarationId, symbol·contentRef, moduleId, sourceRef, sourceSet, 어노테이션 |
+| `UiRootDefinition` | uiRootId, 진입점 종류·심볼, contentRef, Activity·View 참조, resolution |
+| `UiRegionDefinition` | uiRegionDefinitionId, 루트·상위 영역 참조, 콘텐츠 선택 상태·분기, sourceRef |
+| `ContentRelation` | 호출·슬롯 전달·조건 분기·host 포함·키 연결 종류, 양끝 참조, 조건, sourceRef, resolution |
+| `ContentBinding` | contentBindingId, 콘텐츠 참조, 호출 맥락, 루트·provider·host 후보, 타입·인자 치환, 근거 경로 |
+| `TypeRelation`, `DiBinding` | 타입 구현·override, 객체 전달, 바인딩·기여 함수, qualifier·component·scope, 근거 |
+| `EventFlowRelation` | 채널·스트림 참조, 생산·소비 지점, 메시지 타입·인자, 변환·필터 조건, resolution |
+| `ScreenCandidate` | screenCandidateId, contentBindingRefs, 제안 역할, 분류 근거·규칙 버전, 미해결 사유 |
+| `ScreenDefinition` | screenDefinitionId, Nav3 목적지·독립 콘텐츠 종류, contentBindingRefs, entryBindingRefs, 경계 판정 근거·자동/수동 출처 |
 | `ProviderDefinition` | providerId, moduleId, sourceRef, 생성 함수·receiver 참조 |
 | `EntryDeclaration` | declarationId, API 종류, 키 타입·표현식, contentRef, conditionRefs, sourceRef |
 | `RegistrationFunction` | 함수 심볼, receiver·파라미터, 내부 선언·호출 요약 |
 | `EntryBinding` | bindingId, providerId, declarationId, 등록 함수 호출 경로, 타입·인자 치환 |
 | `NavHostDefinition` | hostDefinitionId, provider 참조, 탐색 상태 참조, sourceRef |
-| `TransitionCandidate` | 출발·목적 binding 후보, triggerRef, 연산, 조건, 인자 전달, host, resolution |
+| `TransitionCandidate` | 출발·목적 화면·콘텐츠 후보, 관련 entry binding, triggerRef, 연산, 조건, 인자 전달, host·표시 영역, 근거 경로, resolution |
 | `ScreenStateDefinition` | screenRef, 상태 이름·판별 규칙·출처 |
 | `ProjectConfiguration` | variant, 모듈·의존성·권한·RES·테스트 구성 |
 | `AnalysisDiagnostic` | 코드, 대상 참조, 원인, 지원 범위·분석 한계 |
+
+`ScreenCandidate`의 역할은 화면·상태·컴포넌트·미분류로 구분한다. 하나의 Composable 선언은 사용 맥락에 따라 여러 content binding과 역할을 가질 수 있다. 화면 정의와 entry binding도 같은 함수명이나 키 타입만으로 병합하지 않는다. 후보가 화면으로 분류되면 원래 후보와 정의 사이의 대응을 보존한다.
+
+`ContentRelation`은 UI 구성 관계이고 `TransitionCandidate`는 동작에 따른 이동·변경 후보다. 두 모델의 간선을 서로 대체하지 않는다. runtime 전환 경로와도 별도로 관리한다.
 
 키 표현식은 다음과 같이 구분하는 방식을 제안한다.
 
@@ -58,9 +77,11 @@ DynamicExpression(sourceRef, staticType)
 | 차원 | 예시 |
 | --- | --- |
 | 선언 발견 | 선언 지점이 분석 입력에서 발견됨 |
+| 역할 분류 | 화면 / 상태 / 컴포넌트 / 미분류, 사용 맥락과 근거 |
 | 연결 해석 | 연결 완료 / 후보 집합 / 미해결 |
+| 루트 관계 | 연결된 루트 후보 / 연결 미해결. 실행 도달성 판정과 구분 |
 | 실행 등록 | 특정 세션에서 실제 등록을 관측했는지 |
-| 화면 표시 | 특정 entry 인스턴스를 표시했는지 |
+| 화면 표시 | 특정 화면·entry 인스턴스를 표시했는지 |
 | 상태 도달 | 어떤 판별 규칙으로 상태 도달을 확인했는지 |
 | 분석 범위 | 지원 패턴, 처리한 모듈, 미분석 의존성, 제한 도달 여부 |
 
@@ -72,11 +93,13 @@ DynamicExpression(sourceRef, staticType)
 TransitionObservation
   observationId
   sessionId / deviceId / buildId
-  hostInstanceId
+  hostInstanceId? / uiRegionInstanceId?
   causeId? / triggerRef?
-  originEntryInstanceId?
-  stackBefore / stackAfter
-  visibleEntriesBefore / visibleEntriesAfter
+  originScreenInstanceId? / originEntryInstanceId?
+  stackBefore? / stackAfter?
+  uiSelectionBefore? / uiSelectionAfter?
+  visibleScreensBefore / visibleScreensAfter
+  visibleEntriesBefore? / visibleEntriesAfter?
   operation
   requestedAt? / committedAt? / displayedAt?
   clockDomainId
@@ -84,7 +107,7 @@ TransitionObservation
   resolution / lossInfo
 ```
 
-`originEntryInstanceId`는 행동이 발생한 화면이다. 전환 직전 표시 집합과 달라질 수 있다. 외부 진입에는 앱 화면 출발점이 없을 수 있다.
+`originScreenInstanceId`는 행동이 발생한 화면이고 Nav3 entry라면 `originEntryInstanceId`도 연결한다. 전환 직전 표시 집합과 달라질 수 있다. 외부 진입에는 앱 화면 출발점이 없을 수 있다. Nav3 밖 상태 전환에는 stack이나 entry를 만들어 채우지 않는다. 관측하지 못한 선택 상태와 해당하지 않는 필드는 구분한다.
 
 스택은 복구·초기 상태를 포함한 탐색 상태다. 스택 요소 간 인접성을 실제 전환 이력으로 변환하지 않는다.
 
@@ -135,6 +158,8 @@ FunctionInvocation
 모듈 의존성은 내부 모듈 노드·간선과 외부 패키지 목록을 별도 보관한다. 권한은 merged manifest와 선언 출처를, RES는 종류·이름·구성 qualifier·소속 모듈을 연결하는 방향으로 설계한다. 테스트는 source set, runner, 의존성, 발견된 테스트 구성을 구분한다.
 
 카탈로그마다 처리한 입력 모듈·파일 범위와 미지원 패턴을 기록한다. 전체 모수를 모르는 상황에서 임의의 발견률 백분율을 제공하지 않는다.
+
+평가 결과는 사용자 프로젝트 카탈로그와 별도 `DiscoveryEvaluation`으로 보관한다. 평가 집합·정답 목록 버전, 프로젝트 commit·variant, 지원 버전·패턴, 분석기·규칙 버전, SDUI 등 사전 제외 범위, 자동/수동 실행 조건, 화면 TP·FN·FP, 연결 성공/대상 수, 경로 TP·FN·FP, 미분류·미해결·분석 제한 건수를 포함한다. [검증 계획](06-validation-plan.md)의 산식으로 지표를 계산하고 프로젝트별·패턴별·전체 결과를 함께 보존한다.
 
 ## 버전 관리
 
