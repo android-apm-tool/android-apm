@@ -50,16 +50,23 @@ object CatalogReport {
                     "composableIds" to references(candidate))
             }
             val diagnostics = catalog.records("diagnostics")
+            val referencedCount = composables.size
+            val unlinked = declarations.values.filter { it.string("id") !in composables }.map { it.string("id") }.sorted()
+            declarations.values.forEach { declaration ->
+                composables.putIfAbsent(declaration.string("id"), record("id" to declaration["id"],
+                    "name" to (declaration["name"] ?: "<anonymous>"), "source" to source(declaration["source"])))
+            }
             return record(
                 "schemaVersion" to 2,
                 "moduleId" to catalog["moduleId"], "variant" to catalog["variant"],
                 "collectionStatus" to catalog["collectionStatus"], "resolutionStatus" to catalog["resolutionStatus"],
                 "summary" to record("modules" to modules.size,
                     "sourceFiles" to modules.sumOf { (it["scope"].record()["files"] as? List<*>)?.size ?: 0 },
-                    "collectedComposables" to declarations.size, "referencedComposables" to composables.size,
+                    "collectedComposables" to declarations.size, "referencedComposables" to referencedCount,
+                    "unlinkedComposables" to unlinked.size,
                     "entryDeclarations" to catalog.records("entryDeclarations").size,
                     "entryBindings" to entries.size, "screenCandidates" to candidates.size,
-                    "diagnostics" to diagnostics.size),
+                    "diagnostics" to diagnostics.sumOf { (it["count"] as? Number)?.toInt() ?: 1 }),
                 "modules" to modules.map { it.string("moduleId") },
                 "missingModules" to ((catalog["missingModules"] as? List<*>) ?: emptyList<String>()),
                 "screenCandidates" to candidates,
@@ -68,8 +75,10 @@ object CatalogReport {
                 "navHosts" to hostBindings,
                 "providers" to catalog.records("providers").map { record("id" to it["id"], "source" to source(it["source"])) },
                 "composables" to composables.values.sortedWith(compareBy({ it.string("name") }, { it.string("id") })),
+                "unlinkedComposableIds" to unlinked,
+                "analysis" to (catalog["analysis"] ?: record("engine" to "IR_ONLY", "contentModels" to ContentSemantics.version)),
                 "diagnostics" to diagnostics.groupBy { it.string("code") }.toSortedMap().map { (code, items) ->
-                    record("code" to code, "count" to items.size,
+                    record("code" to code, "count" to items.sumOf { (it["count"] as? Number)?.toInt() ?: 1 },
                         "sources" to items.mapNotNull { source(it["source"]) }.distinct().sortedBy(Json::encode))
                 },
             )

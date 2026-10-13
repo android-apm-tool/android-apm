@@ -56,6 +56,10 @@ internal class CatalogCollector(
                         "name" to declaration.fqNameWhenAvailable?.asString(),
                         "composable" to declaration.hasAnnotation(FqName("androidx.compose.runtime.Composable")),
                         "kind" to if (declaration.name.isSpecial) "LAMBDA" else "FUNCTION",
+                        "simpleName" to declaration.name.asString(),
+                        "packageName" to file.packageFqName.asString(),
+                        "hasBody" to (declaration.body != null),
+                        "overridable" to (declaration is IrSimpleFunction && declaration.modality != org.jetbrains.kotlin.descriptors.Modality.FINAL),
                         "parameters" to declaration.parameters.map { p -> record("ref" to symbol(p), "name" to p.name.asString(), "type" to p.type.render()) },
                         "source" to location(declaration),
                     )
@@ -232,6 +236,7 @@ internal class CatalogCollector(
         val offset = element.startOffset
         return record("path" to relative(file.fileEntry.name), "offset" to offset,
             "line" to if (offset >= 0) file.fileEntry.getLineNumber(offset) + 1 else null,
+            "endLine" to if (element.endOffset >= 0) file.fileEntry.getLineNumber(element.endOffset) + 1 else null,
             "column" to if (offset >= 0) file.fileEntry.getColumnNumber(offset) + 1 else null)
     }
     private fun id(kind: String, element: IrElement): String = MessageDigest.getInstance("SHA-256")

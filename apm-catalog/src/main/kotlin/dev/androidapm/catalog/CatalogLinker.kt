@@ -7,17 +7,35 @@ object CatalogLinker {
     fun link(modules: List<Record>): Record = Linker(modules).link()
 
     private class Linker(val modules: List<Record>) {
-        val kinds = listOf("functions", "composableDeclarations", "values", "callRelations", "entryDeclarations", "providers", "uiRoots", "navHosts", "contentContainers", "diBindings", "diagnostics")
+        val kinds = listOf("functions", "composableDeclarations", "values", "callRelations", "entryDeclarations", "providers", "uiRoots", "navHosts", "contentContainers", "diBindings", "diagnostics", "analysisCallTargets")
         val data = kinds.associateWith { kind -> modules.flatMap { it.records(kind) }.distinctBy { it["id"] ?: it["ref"] ?: it["symbol"] ?: it } }
         val functions = data.getValue("functions").associateBy { it.string("symbol") }
         val values = data.getValue("values").associateBy { it.string("ref") }
         val returns = data.getValue("values").filter { it.containsKey("returnOf") }.groupBy { it.string("returnOf") }
         val calls = data.getValue("callRelations").groupBy { it.string("owner") }
         val callById = data.getValue("callRelations").associateBy { it.string("id") }
+        val bytecodeTargets = data.getValue("analysisCallTargets").groupBy { it.string("callId") }
         val containerIds = data.getValue("contentContainers").map { it.string("id") }.toSet()
         val entries = data.getValue("entryDeclarations").associateBy { it.string("id") }
         val diagnostics = modules.flatMap { it.records("collectionDiagnostics") }.toMutableList()
         val bindings = mutableListOf<Record>()
+        // A warning inventory, not execution edges: unsupported builders must not silently hide UI.
+        val uiBearingFunctions by lazy {
+            val reverse = mutableMapOf<String, MutableSet<String>>()
+            data.getValue("callRelations").forEach { call ->
+                val callees = listOf(call.string("target")) + call.records("arguments").flatMap { argument ->
+                    resolve(argument["value"].record(), emptyMap()).filter { it["kind"] == "FUNCTION" }.map { it.string("ref") }
+                }
+                callees.forEach { reverse.getOrPut(it) { mutableSetOf() }.add(call.string("owner")) }
+            }
+            val found = functions.values.filter { it["composable"] == true }.map { it.string("symbol") }.toMutableSet()
+            found += data.getValue("callRelations").filter { it["composable"] == true }.map { it.string("owner") }
+            val pending = ArrayDeque(found)
+            while (pending.isNotEmpty()) reverse[pending.removeFirst()].orEmpty().forEach {
+                if (found.add(it)) pending.add(it)
+            }
+            found
+        }
 
         fun link(): Record {
             val attached = mutableSetOf<String>()
@@ -91,7 +109,7 @@ object CatalogLinker {
                 },
                 "screenCandidates" to candidates.sortedBy { it.string("id") },
                 "collectionDiagnostics" to modules.flatMap { it.records("collectionDiagnostics") },
-                "resolutionStatus" to if (bindings.all { it["resolution"] == "RESOLVED" } && diagnostics.isEmpty()) "RESOLVED" else "PARTIAL",
+                "resolutionStatus" to if ((bindings + rootBindings + candidates + hostBindings).all { it["resolution"] == "RESOLVED" } && diagnostics.isEmpty()) "RESOLVED" else "PARTIAL",
                 "diagnostics" to diagnostics.distinctBy { Json.encode(it) }.sortedBy { Json.encode(it) },
             )
         }
@@ -194,10 +212,12 @@ object CatalogLinker {
             var started = false
             var steps = 0
             fun run(ref: String, env: Map<String, Record>, depth: Int) {
-                if (depth > 40 || ++steps > 5000) { problem("ANALYSIS_LIMIT_REACHED", functions[ref]?.get("source")); return }
+                if (depth > 40) { problem("ANALYSIS_LIMIT_REACHED", functions[ref]?.get("source")); return }
                 val signature = ref + Json.encode(env)
                 if (!seen.add(signature)) return
-                val function = functions[ref] ?: return
+                if (++steps > 5000) { problem("ANALYSIS_LIMIT_REACHED", functions[ref]?.get("source")); return }
+                val function = functions[ref] ?: run { problem("UNAVAILABLE_FUNCTION_BODY", null); return }
+                if (function["hasBody"] == false) problem("UNAVAILABLE_FUNCTION_BODY", function["source"])
                 started = true
                 calls[ref].orEmpty().forEach { call ->
                     visit(call, env)
@@ -207,23 +227,42 @@ object CatalogLinker {
                     val arguments = call.records("arguments")
                     val target = call.string("target")
                     val name = call.string("name")
+                    val engineTargets = bytecodeTargets[call.string("id")].orEmpty()
+                        .flatMap { (it["targets"] as? List<*>)?.filterIsInstance<String>().orEmpty() }.distinct()
+                    if (engineTargets.isNotEmpty()) {
+                        problem("BYTECODE_MAY_TARGETS", call["source"])
+                        engineTargets.filter { it != target }.forEach { ref ->
+                            functions[ref]?.takeIf { it["composable"] == true }?.let { candidate ->
+                                visit(call + record("id" to call.string("id") + ":bytecode:" + candidate["id"],
+                                    "target" to ref, "name" to candidate["name"], "composable" to true), env)
+                            }
+                            run(ref, env, depth + 1)
+                        }
+                    }
                     val bound = env + arguments.associate { it.string("parameter") to substitute(it["value"].record(), env) } +
                         call.records("typeBindings").associate { it.string("parameter") to (resolve(it["value"].record(), env).singleOrNull() ?: it["value"].record()) }
                     if (name.endsWith(".invoke")) {
                         val receiver = arguments.firstOrNull()?.get("value").record()
                         val choices = resolve(receiver, env)
                         if (choices.isEmpty()) {
-                            if (call["composable"] == true || receiver.string("type").contains("Composable")) problem("UNRESOLVED_CONTENT_FLOW", call["source"])
+                            if (engineTargets.isEmpty() && (call["composable"] == true || receiver.string("type").contains("Composable"))) problem("UNRESOLVED_CONTENT_FLOW", call["source"])
                         } else {
                             if (choices.size > 1) problem("DYNAMIC_CONTENT_CANDIDATES", call["source"])
                             choices.filter { it.string("kind") == "FUNCTION" }.forEach { run(it.string("ref"), bound, depth + 1) }
                         }
                     } else if (target in functions) {
+                        if (functions[target]?.get("overridable") == true && engineTargets.isEmpty()) problem("UNRESOLVED_VIRTUAL_DISPATCH", call["source"])
                         run(target, bound, depth + 1)
                     } else {
-                        arguments.filter { it["composableType"] == true || name in inlineScopeFunctions }.forEach { arg ->
-                            resolve(arg["value"].record(), env).filter { it.string("kind") == "FUNCTION" }.forEach {
-                                if (name !in inlineScopeFunctions && !name.startsWith("androidx.compose.")) problem("UNRESOLVED_EXTERNAL_CONTENT_SLOT", call["source"])
+                        arguments.filterNot { ContentSemantics.follows(name, it) }.forEach { argument ->
+                            if (resolve(argument["value"].record(), env).any { it["kind"] == "FUNCTION" && it.string("ref") in uiBearingFunctions })
+                                problem("UNMODELED_CALLBACK_CONTENT", call["source"])
+                        }
+                        arguments.filter { ContentSemantics.follows(name, it) }.forEach { arg ->
+                            val choices = resolve(arg["value"].record(), env).filter { it.string("kind") == "FUNCTION" }
+                            if (choices.isEmpty()) problem("UNRESOLVED_CONTENT_FLOW", call["source"])
+                            if (!ContentSemantics.known(name)) problem("UNRESOLVED_EXTERNAL_CONTENT_SLOT", call["source"])
+                            choices.forEach {
                                 run(it.string("ref"), bound, depth + 1)
                             }
                         }
@@ -236,6 +275,5 @@ object CatalogLinker {
             return started
         }
 
-        val inlineScopeFunctions = setOf("kotlin.let", "kotlin.run", "kotlin.with", "kotlin.also", "kotlin.apply", "kotlin.collections.forEach", "kotlin.collections.map")
     }
 }

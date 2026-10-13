@@ -44,7 +44,14 @@ try:
     assert value["summary"]["entryDeclarations"] == 2
     assert not {"functions", "values", "callRelations", "contentRelations"}.intersection(value)
     assert json.loads(LINKING.read_text(encoding="utf-8"))["schemaVersion"] == 1
-    assert json.loads(PROJECT_REPORT.read_text(encoding="utf-8"))["schemaVersion"] == 2
+    project = json.loads(PROJECT_REPORT.read_text(encoding="utf-8"))
+    assert project["schemaVersion"] == 2
+    assert project["analysis"]["engine"] == "SOOTUP_HEROS"
+    assert project["analysis"]["linkedCallSites"] >= 1
+    definitions = {c["id"]: c["name"] for c in project["composables"]}
+    detail = next(b for b in project["entryBindings"] if b["keyCandidates"][0]["type"].endswith(".Detail"))
+    assert {"dev.androidapm.sample." + name for name in ["LazyNestedItem", "RepeatedItem", "IndexedItem", "DispatchedItem"]} <= {definitions[i] for i in detail["composableIds"]}
+    assert "dev.androidapm.sample.UnlinkedItem" in {definitions[i] for i in project["unlinkedComposableIds"]}
     assert {b["keyCandidates"][0]["type"] for b in value["entryBindings"]} == {
         "dev.androidapm.sample.Home", "dev.androidapm.sample.Detail"}
     assert len(value["uiRoots"]) == 1
@@ -55,6 +62,8 @@ try:
         assert set(binding["composableIds"]) <= known
     unchanged = run("up-to-date", ":app:apmMergeDebugCatalog")
     assert ":app:apmCompileDebugCatalog UP-TO-DATE" in unchanged
+    assert ":app:apmAnalyzeDebugCatalog UP-TO-DATE" in unchanged
+    assert json.loads(PROJECT_REPORT.read_text(encoding="utf-8")) == project
     assert "Reusing configuration cache" in unchanged
     assert REPORT.read_bytes() == baseline
     normal = run("normal-after", ":app:assembleDebug")
@@ -79,9 +88,10 @@ fun addedProvider() = entryProvider<Any> { entry<Added> { AddedScreen() } }
     assert REPORT.read_bytes() == baseline, "Failed compile replaced the last successful report"
     EXTRA.unlink()
     SOURCE.unlink()
-    run("no-sources", ":app:apmCollectDebugCatalog")
+    run("no-sources", ":app:apmMergeDebugCatalog")
     assert catalog()["summary"]["entryDeclarations"] == 0
     assert catalog()["entryBindings"] == []
+    assert json.loads(PROJECT_REPORT.read_text(encoding="utf-8"))["analysis"]["applicationClasses"] == 0
 finally:
     if EXTRA.exists():
         EXTRA.unlink()
