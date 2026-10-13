@@ -2,13 +2,14 @@
 
 Android 프로젝트에 플러그인을 적용해 화면과 접근 경로를 분석하고, 실제 디바이스에서 측정한 실행 흐름과 자원 사용량을 localhost에서 확인하는 도구.
 
-Gradle/K2 IR 플러그인으로 Composable과 Nav3 entry·content 관계를 수집하고 모듈별 JSON 카탈로그를 생성·병합한다. Compose·Nav3 샘플 앱과 캐시 검증 스크립트를 포함한다. 실행 에이전트, 서버, 대시보드는 아직 구현하지 않았다. 정적 수집기의 지원 범위와 미해결 관계는 [카탈로그](docs/08-catalog-v1.md)에 명시한다.
+Gradle/K2 IR 플러그인으로 Composable과 Nav3 entry·content 관계를 수집하고, SootUp/Heros로 바이트코드 가상 호출·콜백 전달 근거를 보완해 JSON 카탈로그를 병합한다. 연결되지 않은 선언도 공개 목록에 보존한다. Compose·Nav3 샘플 앱과 캐시 검증 스크립트를 포함한다. 실행 에이전트, 서버, 대시보드는 아직 구현하지 않았다. 정적 수집기의 지원 범위와 미해결 관계는 [카탈로그](docs/08-catalog-v1.md)에 명시한다.
 
 ## 시작하기
 
 - [플러그인 개발 환경과 빌드 방법](docs/07-plugin-development.md)
 - [카탈로그 실행·JSON 형식·지원 범위](docs/08-catalog-v1.md)
 - [카탈로그 구현 결정과 샘플·룰업 검증](docs/09-catalog-decisions-and-validation.md)
+- [SootUp/Heros 채택 배경·반례·전체 파이프라인](docs/10-sootup-heros-analysis.md)
 - [설계 문서 목차](docs/README.md)
 - [제품 요구사항과 확정된 화면 구성](docs/01-product-requirements.md)
 - [시스템 구조](docs/02-system-architecture.md)

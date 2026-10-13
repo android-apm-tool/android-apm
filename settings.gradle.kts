@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "android-apm"
-include(":apm-gradle-plugin", ":apm-compiler-plugin", ":apm-catalog")
+include(":apm-gradle-plugin", ":apm-compiler-plugin", ":apm-catalog", ":apm-analysis")

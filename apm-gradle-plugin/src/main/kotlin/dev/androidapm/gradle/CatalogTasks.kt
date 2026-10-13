@@ -15,6 +15,38 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import org.gradle.process.ExecOperations
+import javax.inject.Inject
+
+/** Inputs include both bytecode and its classpath, so analysis cannot survive a changed dependency. */
+@CacheableTask
+abstract class AnalyzeCatalogTask @Inject constructor(private val exec: ExecOperations) : DefaultTask() {
+    @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val catalogs: ConfigurableFileCollection
+    @get:Classpath abstract val classes: ConfigurableFileCollection
+    @get:Classpath abstract val libraries: ConfigurableFileCollection
+    @get:Classpath abstract val analyzerClasspath: ConfigurableFileCollection
+    @get:OutputFile abstract val analysisFile: RegularFileProperty
+
+    @TaskAction fun analyze() {
+        val manifest = temporaryDir.resolve("inputs.json")
+        val result = temporaryDir.resolve("result.json")
+        result.delete()
+        writeCatalog(manifest, record("catalogs" to catalogs.files.map { it.absolutePath }.sorted(),
+            "classes" to classes.files.filter { it.isDirectory }.map { it.absolutePath }.sorted(),
+            // Classpath order is semantic: the consumer's selected dependencies take precedence.
+            "libraries" to libraries.files.filter { it.exists() }.map { it.absolutePath }))
+        exec.javaexec {
+            it.classpath(analyzerClasspath)
+            it.mainClass.set("dev.androidapm.analysis.AnalysisMain")
+            it.maxHeapSize = "3g"
+            it.systemProperty("org.slf4j.simpleLogger.defaultLogLevel", "error")
+            it.args(manifest.absolutePath, result.absolutePath)
+        }.assertNormalExitValue()
+        check(result.isFile) { "APM bytecode analyzer did not produce output" }
+        writeCatalog(analysisFile.get().asFile, Json.decode(result.readText(Charsets.UTF_8)).record(), pretty = true)
+    }
+}
 
 /** Only a successful, complete collector compilation can publish the staging file. */
 @CacheableTask
@@ -49,6 +81,7 @@ abstract class MergeCatalogTask : DefaultTask() {
     @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val catalogs: ConfigurableFileCollection
     @get:Input abstract val missingModules: ListProperty<String>
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val analysisFile: RegularFileProperty
     @get:OutputFile abstract val catalogFile: RegularFileProperty
 
     @TaskAction fun merge() {
@@ -57,7 +90,12 @@ abstract class MergeCatalogTask : DefaultTask() {
         check(modules.all { (it["schemaVersion"] as? Number)?.toInt() == 1 }) { "Unsupported APM catalog schema" }
         check(modules.map { it.string("variant") }.distinct().size <= 1) { "Cannot mix APM variants" }
         check(modules.map { it.string("moduleId") }.distinct().size == modules.size) { "Duplicate APM module IDs" }
-        val result = CatalogLinker.link(modules).toMutableMap()
+        val analysis = Json.decode(analysisFile.get().asFile.readText(Charsets.UTF_8)).record()
+        val enriched = modules.mapIndexed { index, module -> if (index != 0) module else module + record(
+            "analysisCallTargets" to analysis["analysisCallTargets"],
+            "collectionDiagnostics" to (module.records("collectionDiagnostics") + analysis.records("collectionDiagnostics"))) }
+        val result = CatalogLinker.link(enriched).toMutableMap()
+        result["analysis"] = analysis["analysis"]
         result["missingModules"] = missingModules.get()
         if (missingModules.get().isNotEmpty()) result["resolutionStatus"] = "PARTIAL"
         writeCatalog(catalogFile.get().asFile, CatalogReport.create(result), pretty = true)
@@ -85,6 +123,11 @@ internal fun registerCatalogTasks(project: Project, artifact: SubpluginArtifact)
             it.isCanBeResolved = true
         }
         project.dependencies.add(compiler.name, "${artifact.groupId}:${artifact.artifactId}:${artifact.version}")
+        val analyzer = project.configurations.create("apmCatalogAnalyzer") {
+            it.isCanBeConsumed = false
+            it.isCanBeResolved = true
+        }
+        project.dependencies.add(analyzer.name, "${artifact.groupId}:apm-analysis:${artifact.version}")
         val staging = project.layout.buildDirectory.dir("intermediates/android-apm/debug/catalog")
         val collector = factory.registerKotlinJvmCompileTask("apmCompileDebugCatalog", original.compilerOptions)
         collector.configure { task ->
@@ -134,23 +177,47 @@ internal fun registerCatalogTasks(project: Project, artifact: SubpluginArtifact)
             it.linkingFile.set(project.layout.buildDirectory.file("intermediates/android-apm/debug/published/catalog.json"))
             it.catalogFile.set(project.layout.buildDirectory.file("reports/android-apm/catalog/debug/catalog.json"))
         }
+        val analyze = project.tasks.register("apmAnalyzeDebugCatalog", AnalyzeCatalogTask::class.java) {
+            it.group = "android apm"
+            it.description = "Runs SootUp/Heros over isolated debug bytecode and library signatures."
+            it.catalogs.from(publish.flatMap { task -> task.linkingFile })
+            it.classes.from(collector.flatMap { task -> task.destinationDirectory })
+            it.libraries.from(original.libraries)
+            it.analyzerClasspath.from(analyzer)
+            it.analysisFile.set(project.layout.buildDirectory.file("intermediates/android-apm/debug/analysis/bytecode.json"))
+        }
         val merge = project.tasks.register("apmMergeDebugCatalog", MergeCatalogTask::class.java) {
             it.group = "android apm"
             it.description = "Links catalogs of this module and its debug project dependencies."
             it.catalogs.from(publish.flatMap { task -> task.linkingFile })
             it.missingModules.convention(emptyList())
+            it.analysisFile.set(analyze.flatMap { task -> task.analysisFile })
             it.catalogFile.set(project.layout.buildDirectory.file("reports/android-apm/catalog/debug/project-catalog.json"))
         }
         project.gradle.projectsEvaluated {
-            merge.configure { task ->
+            fun dependencyPaths(): List<String> {
                 val dependencies = project.configurations.findByName("debugCompileClasspath") ?: project.configurations.findByName("compileClasspath")
-                val paths = dependencies?.incoming?.resolutionResult?.allComponents.orEmpty().mapNotNull { component ->
+                return dependencies?.incoming?.resolutionResult?.allComponents.orEmpty().mapNotNull { component ->
                     (component.id as? ProjectComponentIdentifier)?.takeIf { it.build.buildPath == ":" }?.projectPath
                 }.filter { it != project.path }.distinct().sorted()
-                val producers = paths.mapNotNull { path -> project.rootProject.findProject(path)?.tasks?.findByName("apmCollectDebugCatalog") as? PublishCatalogTask }
+            }
+            fun producers(paths: List<String>) = paths.mapNotNull { path -> project.rootProject.findProject(path)?.tasks?.findByName("apmCollectDebugCatalog") as? PublishCatalogTask }
+            merge.configure { task ->
+                val paths = dependencyPaths()
+                val producers = producers(paths)
                 task.catalogs.from(producers.map { it.linkingFile })
                 task.dependsOn(producers)
                 task.missingModules.set(paths.filter { path -> producers.none { it.project.path == path } })
+            }
+            analyze.configure { analysis ->
+                val producers = producers(dependencyPaths())
+                analysis.catalogs.from(producers.map { it.linkingFile })
+                analysis.dependsOn(producers)
+                producers.forEach { producer ->
+                    val compile = producer.project.tasks.named("apmCompileDebugCatalog", KotlinJvmCompile::class.java)
+                    analysis.classes.from(compile.flatMap { it.destinationDirectory })
+                    analysis.libraries.from(compile.map { it.libraries })
+                }
             }
         }
     }

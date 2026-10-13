@@ -9,9 +9,9 @@ allprojects {
 }
 
 tasks.named("build") {
-    dependsOn(":apm-catalog:build", ":apm-gradle-plugin:build", ":apm-compiler-plugin:build")
+    dependsOn(":apm-catalog:build", ":apm-gradle-plugin:build", ":apm-compiler-plugin:build", ":apm-analysis:build")
 }
 
 tasks.named("check") {
-    dependsOn(":apm-catalog:check", ":apm-gradle-plugin:check", ":apm-compiler-plugin:check")
+    dependsOn(":apm-catalog:check", ":apm-gradle-plugin:check", ":apm-compiler-plugin:check", ":apm-analysis:check")
 }

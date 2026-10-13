@@ -20,6 +20,7 @@
         "sourceFiles": {"$ref": "#/$defs/count"},
         "collectedComposables": {"$ref": "#/$defs/count"},
         "referencedComposables": {"$ref": "#/$defs/count"},
+        "unlinkedComposables": {"$ref": "#/$defs/count"},
         "entryDeclarations": {"$ref": "#/$defs/count"},
         "entryBindings": {"$ref": "#/$defs/count"},
         "screenCandidates": {"$ref": "#/$defs/count"},
@@ -28,6 +29,16 @@
     },
     "modules": {"$ref": "#/$defs/ids"},
     "missingModules": {"$ref": "#/$defs/ids"},
+    "unlinkedComposableIds": {"$ref": "#/$defs/ids"},
+    "analysis": {
+      "type": "object", "required": ["engine", "contentModels"],
+      "properties": {
+        "engine": {"enum": ["IR_ONLY", "SOOTUP_HEROS"]},
+        "contentModels": {"type": "string"},
+        "sootUpVersion": {"type": "string"}, "herosVersion": {"type": "string"},
+        "scope": {"type": "string"}, "limitations": {"$ref": "#/$defs/ids"}
+      }
+    },
     "screenCandidates": {"type": "array", "items": {
       "type": "object", "additionalProperties": false,
       "required": ["id", "source", "classification", "resolution", "arguments", "contentCalls", "composableIds"],

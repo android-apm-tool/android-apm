@@ -2,6 +2,8 @@
 
 기준일: 2026-10-13. Nav3 연결 수집과 JSON 출력 개선에서 구현한 결정을 정리한다. 전체 제품 방향은 [시스템 구조](02-system-architecture.md), 명령과 스키마는 [카탈로그 사용법](08-catalog-v1.md)을 따른다.
 
+2026-10-14 보완: 이 문서의 수치와 흐름도는 최초 구현 스냅샷이다. 이후 발견한 Lazy/반복 콘텐츠 누락, 공개 목록 필터링 오류와 SootUp/Heros 채택 결정은 [10번 문서](10-sootup-heros-analysis.md)를 따른다.
+
 ## 1. 별도 전체 컴파일로 수집한다
 
 일반 증분 컴파일의 마지막 IR 콜백만 저장하면 수정하지 않은 파일이나 삭제된 선언을 포함한 전체 목록을 보장하기 어렵다. 현재는 원래 compilation의 소스·생성 작업·클래스패스·friend 경로·컴파일러 설정을 재사용하는 별도 Kotlin 컴파일을 수행한다. 수집 작업에서만 증분 컴파일을 끄며 앱의 일반 컴파일 설정은 유지한다.
@@ -47,7 +49,7 @@ staging은 `intermediates/android-apm/debug/catalog`, 병합 입력은 `intermed
 
 `contentCalls`는 함수 이름을 빠르게 확인하는 요약이다. 이름 있는 Composable 함수 참조는 해당 함수 이름을 보존하고, 람다는 본문에서 직접 호출하는 Composable 이름을 기록한다. 여러 content 슬롯은 각 슬롯의 직접 호출을 따로 기록한다. 이 목록의 첫 항목이 화면이라는 뜻은 아니다.
 
-`composableIds`는 연결 분석이 도달한 함수 집합이다. 참조하지 않은 preview·도우미 선언은 공개 목록에서 제외하며 전체 선언은 내부 파일에 남긴다. `collectedComposables`는 수집 선언 수, `referencedComposables`는 외부 함수까지 포함한 참조 수여서 둘 다 화면 개수로 사용할 수 없다.
+`composableIds`는 연결 분석이 도달한 함수 집합이다. 최초 구현은 참조하지 않은 선언을 공개 목록에서 제외했지만, 이것이 미지원 연결을 가진 실제 UI도 숨기는 오류였다. 2026-10-14부터 전체 로컬 선언을 공개하고 `unlinkedComposableIds`로 미연결 상태를 구분한다. `collectedComposables`는 수집 선언 수, `referencedComposables`는 외부 함수까지 포함한 참조 수여서 둘 다 화면 개수로 사용할 수 없다.
 
 ## 4. 캐시와 실패 처리
 
