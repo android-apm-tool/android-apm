@@ -10,12 +10,14 @@ import org.junit.jupiter.api.io.TempDir
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
 import java.nio.file.Path
+import kotlin.io.path.exists
+import kotlin.io.path.readText
 import kotlin.io.path.writeText
 
 class ApmCompilerPluginTest {
     @TempDir lateinit var workDir: Path
 
-    private fun compile(enabled: String?): Pair<ExitCode, String> {
+    private fun compile(enabled: String?, report: Path? = null): Pair<ExitCode, String> {
         val source = workDir.resolve("Fixture.kt")
         source.writeText("package fixture\nclass Fixture")
         val output = ByteArrayOutputStream()
@@ -23,9 +25,10 @@ class ApmCompilerPluginTest {
             source.toString(), "-d", workDir.resolve("classes").toString(),
             "-no-stdlib", "-no-reflect", "-jvm-target", "17",
             "-classpath", Path.of(Unit::class.java.protectionDomain.codeSource.location.toURI()).toString(),
-            "-Xplugin=${System.getProperty("apm.test.pluginJar")}",
+            "-Xplugin=" + System.getProperty("apm.test.pluginJar"),
         )
-        if (enabled != null) args += listOf("-P", "plugin:dev.androidapm.compiler:enabled=$enabled")
+        if (enabled != null) args += listOf("-P", "plugin:dev.androidapm.compiler:enabled=" + enabled)
+        if (report != null) args += listOf("-P", "plugin:dev.androidapm.compiler:reportFile=" + report)
         val exit = PrintStream(output).use { K2JVMCompiler().exec(it, *args.toTypedArray()) }
         return exit to output.toString(Charsets.UTF_8)
     }
@@ -50,5 +53,28 @@ class ApmCompilerPluginTest {
         val (exit, output) = compile("yes")
         assertEquals(ExitCode.COMPILATION_ERROR, exit, output)
         assertTrue(output.contains("enabled must be true or false"), output)
+    }
+
+    @Test
+    fun `report output is deterministic and replaces the compiler log`() {
+        val report = workDir.resolve("reports/nested/ir-probe.txt")
+        val (exit, output) = compile("true", report)
+        assertEquals(ExitCode.OK, exit, output)
+        assertFalse(output.contains("APM IR probe:"), output)
+        val contents = report.readText()
+        assertTrue(contents.contains("APM IR probe:"), contents)
+        assertTrue(contents.contains("sourceFiles=1"), contents)
+        val (secondExit, secondOutput) = compile("true", report)
+        assertEquals(ExitCode.OK, secondExit, secondOutput)
+        assertEquals(contents, report.readText())
+    }
+
+    @Test
+    fun `disabled probe does not create a report`() {
+        val report = workDir.resolve("reports/ir-probe.txt")
+        val (exit, output) = compile("false", report)
+        assertEquals(ExitCode.OK, exit, output)
+        assertFalse(report.exists())
+        assertFalse(output.contains("APM IR probe:"), output)
     }
 }

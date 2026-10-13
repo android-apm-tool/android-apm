@@ -12,8 +12,12 @@ import org.jetbrains.kotlin.ir.util.hasAnnotation
 import org.jetbrains.kotlin.ir.visitors.IrVisitorVoid
 import org.jetbrains.kotlin.ir.visitors.acceptChildrenVoid
 import org.jetbrains.kotlin.name.FqName
+import java.io.File
 
-internal class ApmIrProbe(private val messages: MessageCollector) : IrGenerationExtension {
+internal class ApmIrProbe(
+    private val messages: MessageCollector,
+    private val reportFile: File? = null,
+) : IrGenerationExtension {
     override fun generate(moduleFragment: IrModuleFragment, pluginContext: IrPluginContext) {
         val composables = sortedSetOf<String>()
         moduleFragment.acceptChildrenVoid(object : IrVisitorVoid() {
@@ -26,11 +30,14 @@ internal class ApmIrProbe(private val messages: MessageCollector) : IrGeneration
                 super.visitSimpleFunction(declaration)
             }
         })
-        // This describes this IR invocation, not a complete or persisted screen catalog.
-        messages.report(
-            CompilerMessageSeverity.INFO,
-            "APM IR probe: module=${moduleFragment.name}; sourceFiles=${moduleFragment.files.size}; " +
-                "composables=${composables.joinToString(",")}",
-        )
+        // An invocation snapshot, not a merged catalog: incremental compilations can see a subset of sources.
+        val summary = "APM IR probe: module=" + moduleFragment.name +
+            "; sourceFiles=" + moduleFragment.files.size + "; composables=" + composables.joinToString(",")
+        if (reportFile == null) {
+            messages.report(CompilerMessageSeverity.INFO, summary)
+        } else {
+            reportFile.absoluteFile.parentFile.mkdirs()
+            reportFile.writeText(summary + "\n", Charsets.UTF_8)
+        }
     }
 }
