@@ -7,6 +7,8 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE = ROOT / "samples/compose-app"
 REPORT = SAMPLE / "app/build/reports/android-apm/catalog/debug/catalog.json"
+PROJECT_REPORT = REPORT.with_name("project-catalog.json")
+LINKING = SAMPLE / "app/build/intermediates/android-apm/debug/published/catalog.json"
 SOURCE = SAMPLE / "app/src/main/kotlin/dev/androidapm/sample/MainActivity.kt"
 EXTRA = SOURCE.with_name("CatalogVerification.kt")
 LOGS = ROOT / "build/catalog-verification"
@@ -37,12 +39,20 @@ try:
     run("collect", ":app:apmMergeDebugCatalog")
     baseline = REPORT.read_bytes()
     value = catalog()
-    assert len(value["entryDeclarations"]) == 2
+    assert value["schemaVersion"] == 2
+    assert baseline.startswith(b'{\n  "schemaVersion": 2,\n')
+    assert value["summary"]["entryDeclarations"] == 2
+    assert not {"functions", "values", "callRelations", "contentRelations"}.intersection(value)
+    assert json.loads(LINKING.read_text(encoding="utf-8"))["schemaVersion"] == 1
+    assert json.loads(PROJECT_REPORT.read_text(encoding="utf-8"))["schemaVersion"] == 2
     assert {b["keyCandidates"][0]["type"] for b in value["entryBindings"]} == {
         "dev.androidapm.sample.Home", "dev.androidapm.sample.Detail"}
-    assert len(value["uiRootBindings"]) == 1
-    assert len(value["navHostBindings"]) == 1
-    assert value["navHostBindings"][0]["resolution"] == "RESOLVED"
+    assert len(value["uiRoots"]) == 1
+    assert len(value["navHosts"]) == 1
+    assert value["navHosts"][0]["resolution"] == "RESOLVED"
+    known = {c["id"] for c in value["composables"]}
+    for binding in value["entryBindings"] + value["uiRoots"] + value["screenCandidates"]:
+        assert set(binding["composableIds"]) <= known
     unchanged = run("up-to-date", ":app:apmMergeDebugCatalog")
     assert ":app:apmCompileDebugCatalog UP-TO-DATE" in unchanged
     assert "Reusing configuration cache" in unchanged
@@ -60,7 +70,7 @@ private object Added
 fun addedProvider() = entryProvider<Any> { entry<Added> { AddedScreen() } }
 ''', encoding="utf-8")
     run("added-source", ":app:apmCollectDebugCatalog")
-    assert len(catalog()["entryDeclarations"]) == 3
+    assert catalog()["summary"]["entryDeclarations"] == 3
     EXTRA.unlink()
     run("deleted-source", ":app:apmCollectDebugCatalog")
     assert REPORT.read_bytes() == baseline
@@ -70,7 +80,8 @@ fun addedProvider() = entryProvider<Any> { entry<Added> { AddedScreen() } }
     EXTRA.unlink()
     SOURCE.unlink()
     run("no-sources", ":app:apmCollectDebugCatalog")
-    assert catalog()["entryDeclarations"] == []
+    assert catalog()["summary"]["entryDeclarations"] == 0
+    assert catalog()["entryBindings"] == []
 finally:
     if EXTRA.exists():
         EXTRA.unlink()

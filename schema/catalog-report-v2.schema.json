@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/android-apm-tool/android-apm/schema/catalog-report-v2.schema.json",
+  "title": "Android APM readable UI catalog report v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "moduleId", "variant", "collectionStatus", "resolutionStatus", "summary", "modules", "missingModules", "screenCandidates", "entryBindings", "uiRoots", "navHosts", "providers", "composables", "diagnostics"],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "moduleId": {"type": "string"},
+    "variant": {"const": "debug"},
+    "collectionStatus": {"const": "COMPLETE_FOR_DECLARED_INPUTS"},
+    "resolutionStatus": {"$ref": "#/$defs/resolution"},
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["modules", "sourceFiles", "collectedComposables", "referencedComposables", "entryDeclarations", "entryBindings", "screenCandidates", "diagnostics"],
+      "properties": {
+        "modules": {"type": "integer", "minimum": 1},
+        "sourceFiles": {"$ref": "#/$defs/count"},
+        "collectedComposables": {"$ref": "#/$defs/count"},
+        "referencedComposables": {"$ref": "#/$defs/count"},
+        "entryDeclarations": {"$ref": "#/$defs/count"},
+        "entryBindings": {"$ref": "#/$defs/count"},
+        "screenCandidates": {"$ref": "#/$defs/count"},
+        "diagnostics": {"$ref": "#/$defs/count"}
+      }
+    },
+    "modules": {"$ref": "#/$defs/ids"},
+    "missingModules": {"$ref": "#/$defs/ids"},
+    "screenCandidates": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "source", "classification", "resolution", "arguments", "contentCalls", "composableIds"],
+      "properties": {
+        "id": {"type": "string"}, "source": {"$ref": "#/$defs/source"},
+        "classification": {"const": "UNCLASSIFIED"}, "resolution": {"$ref": "#/$defs/resolution"},
+        "arguments": {"type": "object"}, "contentCalls": {"$ref": "#/$defs/ids"}, "composableIds": {"$ref": "#/$defs/ids"}
+      }
+    }},
+    "entryBindings": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "source", "providerId", "context", "classification", "resolution", "keyCandidates", "contentCalls", "composableIds"],
+      "properties": {
+        "id": {"type": "string"}, "source": {"$ref": "#/$defs/source"},
+        "providerId": {"type": ["string", "null"]},
+        "context": {"enum": ["REGISTRATION", "FALLBACK", "DIRECT_PROVIDER"]},
+        "classification": {"enum": ["NAV3_DESTINATION_CONTENT", "UNCLASSIFIED"]},
+        "resolution": {"$ref": "#/$defs/resolution"},
+        "keyCandidates": {"type": "array", "items": {"$ref": "#/$defs/expression"}},
+        "conditions": {"type": "array", "items": {"$ref": "#/$defs/expression"}},
+        "contentCalls": {"$ref": "#/$defs/ids"}, "composableIds": {"$ref": "#/$defs/ids"}
+      }
+    }},
+    "uiRoots": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "source", "resolution", "navHostIds", "contentCalls", "composableIds"],
+      "properties": {
+        "id": {"type": "string"}, "source": {"$ref": "#/$defs/source"}, "resolution": {"$ref": "#/$defs/resolution"},
+        "navHostIds": {"$ref": "#/$defs/ids"}, "contentCalls": {"$ref": "#/$defs/ids"}, "composableIds": {"$ref": "#/$defs/ids"}
+      }
+    }},
+    "navHosts": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "source", "resolution", "providerIds"],
+      "properties": {
+        "id": {"type": "string"}, "source": {"$ref": "#/$defs/source"}, "resolution": {"$ref": "#/$defs/resolution"}, "providerIds": {"$ref": "#/$defs/ids"}
+      }
+    }},
+    "providers": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false, "required": ["id", "source"],
+      "properties": {"id": {"type": "string"}, "source": {"$ref": "#/$defs/source"}}
+    }},
+    "composables": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false, "required": ["id", "name"],
+      "oneOf": [{"required": ["source"]}, {"required": ["external"]}],
+      "properties": {
+        "id": {"type": "string"}, "name": {"type": "string"}, "source": {"$ref": "#/$defs/source"}, "external": {"const": true}
+      }
+    }},
+    "diagnostics": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false, "required": ["code", "count", "sources"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1}, "count": {"type": "integer", "minimum": 1},
+        "sources": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/source"}}
+      }
+    }}
+  },
+  "$defs": {
+    "count": {"type": "integer", "minimum": 0},
+    "resolution": {"enum": ["RESOLVED", "PARTIAL"]},
+    "ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+    "source": {
+      "type": ["object", "null"], "additionalProperties": false, "required": ["path", "line"],
+      "properties": {"path": {"type": "string"}, "line": {"type": ["integer", "null"]}}
+    },
+    "expression": {
+      "type": "object", "additionalProperties": false, "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["CONSTANT", "TYPE", "OBJECT", "FUNCTION", "CALL", "CONSTRUCTOR", "REFERENCE", "LIST", "CHOICE", "UNKNOWN"]},
+        "type": {"type": ["string", "null"]}, "typeParameter": {"type": "string"}, "name": {"type": ["string", "null"]},
+        "value": {}, "values": {"type": "array", "items": {"$ref": "#/$defs/expression"}}, "source": {"$ref": "#/$defs/source"}
+      }
+    }
+  }
+}

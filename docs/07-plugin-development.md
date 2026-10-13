@@ -35,7 +35,7 @@ android-apm/
 
 ## 개발과 확인
 
-카탈로그 수집·병합 작업과 지원 범위는 [카탈로그 v1](08-catalog-v1.md)을 참고한다.
+카탈로그 수집·병합 작업과 지원 범위는 [카탈로그](08-catalog-v1.md)를 참고한다.
 
 JDK 17을 준비한 뒤 저장소 루트에서 실행한다. 플러그인 자체 빌드에는 Android SDK가 필요 없다.
 
@@ -64,22 +64,24 @@ python3 scripts/verify-bootstrap.py
 
 `assembleDebug`·`bundleDebug`와 debug 소스 빌드에는 `apmReportDebug`가 연결된다. 이 작업은 컴파일이 성공한 뒤 저장된 결과를 lifecycle 로그로 출력한다. 컴파일이 `UP-TO-DATE`이거나 `FROM-CACHE`여도 출력 작업은 실행하므로 `--info`, `--rerun-tasks`, `--no-build-cache`, Clean이 필요 없다. 결과만 다시 보려면 `:app:apmReportDebug`를 실행한다. 컴파일 실패 후에는 이전 결과를 출력하지 않으며, 옵션을 끄거나 release를 빌드하면 보고 작업을 연결하지 않는다.
 
-이 파일은 마지막 IR 호출의 스냅샷이다. 증분 컴파일에서는 변경된 일부 파일만 포함할 수 있으며, 전체 소스의 결과를 병합한 화면 카탈로그나 Nav3 entry 연결 결과가 아니다. 여러 컴파일 호출의 결과 병합은 후속 수집기 작업이다.
+이 probe 파일은 마지막 IR 호출의 스냅샷이다. 증분 컴파일에서는 변경된 일부 파일만 포함할 수 있다. 전체 소스와 Nav3 연결 결과는 별도 `apmCollectDebugCatalog`·`apmMergeDebugCatalog` 작업에서 생성한다.
 
 일반적인 개발 순서는 플러그인 수정 → `./gradlew build` → 샘플 컴파일 → IR 로그 확인이다. 샘플 적용과 컴파일러 SPI 연결은 별도로 검증해, Gradle 설정 문제와 IR 분석 문제를 구분한다.
 
 ## 현재 구현 범위와 다음 단계
 
-현재 구현은 Gradle·K2·Compose의 연결 확인용이다. 진단 로그의 Composable 이름은 전체 모듈 목록이나 화면 카탈로그가 아니다. 원본 IR을 변경하지 않으며 화면 발견률, 실제 화면 표시, 함수 계측을 검증한 결과도 아니다.
+현재는 probe와 전체 카탈로그 수집기를 함께 제공한다. 수집기는 Compose lowering 이전의 IR에서 Composable·UI 루트·Nav3 관계를 읽고, 모듈 병합 및 읽기용 JSON v2를 생성한다. probe 로그의 함수 이름은 전체 목록이 아니다. 원본 IR을 변경하지 않으며 화면 역할 분류, 실제 화면 표시, 함수 계측은 아직 구현하지 않았다.
 
-2026-10-12 로컬 검증 결과:
+2026-10-12 초기 probe 검증 이력:
 
 - `./gradlew build`: 컴파일러 연결 테스트 3개, Gradle TestKit 테스트 1개, Gradle 플러그인 검증 통과.
 - Android 샘플의 debug APK 빌드 성공. IR 로그에서 `SampleApp`, `HomeScreen`, `DetailScreen` 확인.
 - 옵션을 끈 debug와 옵션을 켠 release를 다시 컴파일해 probe가 실행되지 않음을 확인.
-- 현재 IR 로그에는 Compose가 생성한 람다도 포함된다. 수집기의 실행 순서와 변환 전 원본 관계 보존은 별도 PoC에서 검증해야 한다.
+- probe 로그에는 Compose가 생성한 람다도 포함됐다. 전체 수집기의 실행 순서와 변환 전 원본 관계 보존은 이후 별도 검증했다.
 - 디바이스 설치·UI 실행, 전체 화면·경로 수집과 99% 발견률 측정은 수행하지 않았다.
 
 GitHub Actions에도 같은 플러그인 테스트와 Android 샘플 컴파일 검증을 구성한다. 테스트 보고서와 컴파일 로그를 artifact로 남긴다.
 
-다음 단계는 variant 설정·생성 소스·다른 컴파일러 플러그인을 재현하는 전체 수집용 컴파일 PoC다. 이어 선언·호출·키·콘텐츠 관계를 모듈 카탈로그로 저장하고, 모듈 간 연결과 분류를 구현한다. 설계의 `apmCollect<Variant>Catalog`, `apmMerge<Variant>Catalog`, `apmRun<Variant>`는 아직 제공하지 않는다. Android 에이전트, 서버, 대시보드와 배포 설정도 후속 작업이다.
+2026-10-13에는 플러그인 테스트 20개, 샘플 전체 수집·캐시·삭제·실패 처리, 룰업 37개 모듈 수집·병합을 검증했다. `apmCompileDebugCatalog`·`apmCollectDebugCatalog`·`apmMergeDebugCatalog`는 사용할 수 있다. 세부 결과는 [구현 결정과 검증](09-catalog-decisions-and-validation.md)에 기록한다.
+
+다음 단계는 화면·탭·시트·상태 분류와 미해결 연결 보완이다. 추가 variant 지원, DI 자동 연결, 전환 분석, `apmRun<Variant>`, Android 에이전트, 서버, 대시보드 및 외부 배포는 후속 작업이다.

@@ -2,12 +2,13 @@
 
 Android 프로젝트에 플러그인을 적용해 화면과 접근 경로를 분석하고, 실제 디바이스에서 측정한 실행 흐름과 자원 사용량을 localhost에서 확인하는 도구.
 
-Gradle/K2 IR 플러그인으로 Composable과 Nav3 entry·content 관계를 수집하고 모듈별 JSON 카탈로그를 생성·병합한다. Compose·Nav3 샘플 앱과 캐시 검증 스크립트를 포함한다. 실행 에이전트, 서버, 대시보드는 아직 구현하지 않았다. 정적 수집기의 지원 범위와 미해결 관계는 [카탈로그 v1](docs/08-catalog-v1.md)에 명시한다.
+Gradle/K2 IR 플러그인으로 Composable과 Nav3 entry·content 관계를 수집하고 모듈별 JSON 카탈로그를 생성·병합한다. Compose·Nav3 샘플 앱과 캐시 검증 스크립트를 포함한다. 실행 에이전트, 서버, 대시보드는 아직 구현하지 않았다. 정적 수집기의 지원 범위와 미해결 관계는 [카탈로그](docs/08-catalog-v1.md)에 명시한다.
 
 ## 시작하기
 
 - [플러그인 개발 환경과 빌드 방법](docs/07-plugin-development.md)
 - [카탈로그 실행·JSON 형식·지원 범위](docs/08-catalog-v1.md)
+- [카탈로그 구현 결정과 샘플·룰업 검증](docs/09-catalog-decisions-and-validation.md)
 - [설계 문서 목차](docs/README.md)
 - [제품 요구사항과 확정된 화면 구성](docs/01-product-requirements.md)
 - [시스템 구조](docs/02-system-architecture.md)
@@ -48,4 +49,4 @@ Kotlin·Compose·Nav3의 구체적인 지원 버전은 호환성 검증 후 고�
 
 [Figma 최종 확정안](https://www.figma.com/design/qGdhVOiSGSh9VUAMFfl40h/APM?node-id=132-12445)
 
-설계 기준일: 2026-10-12.
+설계 기준일: 2026-10-13.

@@ -25,6 +25,7 @@ abstract class PublishCatalogTask : DefaultTask() {
     abstract val sourceFiles: ConfigurableFileCollection
     @get:Input abstract val moduleId: Property<String>
     @get:Input abstract val variant: Property<String>
+    @get:OutputFile abstract val linkingFile: RegularFileProperty
     @get:OutputFile abstract val catalogFile: RegularFileProperty
 
     @TaskAction fun publish() {
@@ -37,7 +38,8 @@ abstract class PublishCatalogTask : DefaultTask() {
             check(input != null) { "APM collector did not produce a complete module catalog" }
             Json.decode(input.readText(Charsets.UTF_8)).record()
         }
-        writeCatalog(catalogFile.get().asFile, catalog)
+        writeCatalog(linkingFile.get().asFile, catalog)
+        writeCatalog(catalogFile.get().asFile, CatalogReport.create(catalog), pretty = true)
         logger.lifecycle("Android APM catalog: ${catalogFile.get().asFile.absolutePath}")
     }
 }
@@ -58,17 +60,17 @@ abstract class MergeCatalogTask : DefaultTask() {
         val result = CatalogLinker.link(modules).toMutableMap()
         result["missingModules"] = missingModules.get()
         if (missingModules.get().isNotEmpty()) result["resolutionStatus"] = "PARTIAL"
-        writeCatalog(catalogFile.get().asFile, result)
+        writeCatalog(catalogFile.get().asFile, CatalogReport.create(result), pretty = true)
         logger.lifecycle("Android APM merged ${modules.size} module(s): ${catalogFile.get().asFile.absolutePath}")
     }
 }
 
-private fun writeCatalog(output: java.io.File, catalog: Record) {
+private fun writeCatalog(output: java.io.File, catalog: Record, pretty: Boolean = false) {
         // Atomic replacement: consumers never read a half-written successful result.
         output.parentFile.mkdirs()
         val temporary = Files.createTempFile(output.parentFile.toPath(), "catalog-", ".json")
         try {
-            Files.newBufferedWriter(temporary, Charsets.UTF_8).use { writer -> Json.write(catalog, writer); writer.append('\n') }
+            Files.newBufferedWriter(temporary, Charsets.UTF_8).use { writer -> Json.write(catalog, writer, pretty); writer.append('\n') }
             try { Files.move(temporary, output.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING) }
             catch (_: java.nio.file.AtomicMoveNotSupportedException) { Files.move(temporary, output.toPath(), StandardCopyOption.REPLACE_EXISTING) }
         } finally { Files.deleteIfExists(temporary) }
@@ -129,12 +131,13 @@ internal fun registerCatalogTasks(project: Project, artifact: SubpluginArtifact)
             it.sourceFiles.from(original.sources)
             it.moduleId.set(project.rootProject.name + project.path)
             it.variant.set("debug")
+            it.linkingFile.set(project.layout.buildDirectory.file("intermediates/android-apm/debug/published/catalog.json"))
             it.catalogFile.set(project.layout.buildDirectory.file("reports/android-apm/catalog/debug/catalog.json"))
         }
         val merge = project.tasks.register("apmMergeDebugCatalog", MergeCatalogTask::class.java) {
             it.group = "android apm"
             it.description = "Links catalogs of this module and its debug project dependencies."
-            it.catalogs.from(publish.flatMap { task -> task.catalogFile })
+            it.catalogs.from(publish.flatMap { task -> task.linkingFile })
             it.missingModules.convention(emptyList())
             it.catalogFile.set(project.layout.buildDirectory.file("reports/android-apm/catalog/debug/project-catalog.json"))
         }
@@ -145,7 +148,7 @@ internal fun registerCatalogTasks(project: Project, artifact: SubpluginArtifact)
                     (component.id as? ProjectComponentIdentifier)?.takeIf { it.build.buildPath == ":" }?.projectPath
                 }.filter { it != project.path }.distinct().sorted()
                 val producers = paths.mapNotNull { path -> project.rootProject.findProject(path)?.tasks?.findByName("apmCollectDebugCatalog") as? PublishCatalogTask }
-                task.catalogs.from(producers.map { it.catalogFile })
+                task.catalogs.from(producers.map { it.linkingFile })
                 task.dependsOn(producers)
                 task.missingModules.set(paths.filter { path -> producers.none { it.project.path == path } })
             }

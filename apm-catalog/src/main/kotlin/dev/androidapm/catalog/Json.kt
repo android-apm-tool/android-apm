@@ -5,7 +5,12 @@ object Json {
     fun encode(value: Any?): String = buildString { write(value, this) }
 
     /** Streams large catalogs without allocating recursively concatenated JSON copies. */
-    fun write(value: Any?, output: Appendable) {
+    fun write(value: Any?, output: Appendable, pretty: Boolean = false) = write(value, output, pretty, 0)
+
+    private fun write(value: Any?, output: Appendable, pretty: Boolean, depth: Int) {
+        fun newline(level: Int) {
+            if (pretty) { output.append('\n'); repeat(level) { output.append("  ") } }
+        }
         when (value) {
         null -> output.append("null")
         is String -> {
@@ -26,15 +31,27 @@ object Json {
         }
         is Map<*, *> -> {
             output.append('{')
-            value.entries.sortedBy { it.key.toString() }.forEachIndexed { index, entry ->
+            val entries = if (pretty) value.entries.toList() else value.entries.sortedBy { it.key.toString() }
+            entries.forEachIndexed { index, entry ->
                 if (index != 0) output.append(',')
-                write(entry.key.toString(), output); output.append(':'); write(entry.value, output)
+                newline(depth + 1)
+                write(entry.key.toString(), output, pretty, depth + 1)
+                output.append(if (pretty) ": " else ":")
+                write(entry.value, output, pretty, depth + 1)
             }
+            if (entries.isNotEmpty()) newline(depth)
             output.append('}')
         }
         is Iterable<*> -> {
             output.append('[')
-            value.forEachIndexed { index, element -> if (index != 0) output.append(','); write(element, output) }
+            var nonEmpty = false
+            value.forEachIndexed { index, element ->
+                if (index != 0) output.append(',')
+                newline(depth + 1)
+                write(element, output, pretty, depth + 1)
+                nonEmpty = true
+            }
+            if (nonEmpty) newline(depth)
             output.append(']')
         }
         else -> error("Unsupported JSON value: ${value.javaClass.name}")
