@@ -2,10 +2,12 @@ package dev.androidapm.gradle
 
 import org.gradle.api.Project
 import org.gradle.api.provider.Provider
+import org.jetbrains.kotlin.gradle.plugin.FilesSubpluginOption
 import org.jetbrains.kotlin.gradle.plugin.KotlinCompilation
 import org.jetbrains.kotlin.gradle.plugin.KotlinCompilerPluginSupportPlugin
 import org.jetbrains.kotlin.gradle.plugin.SubpluginArtifact
 import org.jetbrains.kotlin.gradle.plugin.SubpluginOption
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompileTool
 import java.util.Properties
 
 class AndroidApmPlugin : KotlinCompilerPluginSupportPlugin {
@@ -40,8 +42,31 @@ class AndroidApmPlugin : KotlinCompilerPluginSupportPlugin {
         version = metadata.getProperty("version"),
     )
 
-    override fun applyToCompilation(kotlinCompilation: KotlinCompilation<*>): Provider<List<SubpluginOption>> =
-        kotlinCompilation.target.project.provider {
-            listOf(SubpluginOption("enabled", "true"))
+    override fun applyToCompilation(kotlinCompilation: KotlinCompilation<*>): Provider<List<SubpluginOption>> {
+        val project = kotlinCompilation.target.project
+        val compileTask = kotlinCompilation.compileTaskProvider
+        val reportDirectory = project.layout.buildDirectory.dir("reports/android-apm/debug")
+        val reportFile = reportDirectory.map { it.file("ir-probe.txt") }
+        // Kotlin's incremental compiler initializes additional outputs as directories.
+        compileTask.configure { it.outputs.dir(reportDirectory).withPropertyName("apmIrProbeReports") }
+
+        val reportTask = project.tasks.register("apmReportDebug", ApmReportTask::class.java) {
+            it.group = "android apm"
+            it.description = "Displays the saved debug IR diagnostic, including on up-to-date and cached builds."
+            it.dependsOn(compileTask)
+            it.reports.from(reportFile)
+            it.kotlinSources.from(compileTask.map { task -> (task as KotlinCompileTool).sources })
         }
+        // A normal dependency does not print a stale diagnostic if compilation fails.
+        val lifecycleNames = setOf("assembleDebug", "bundleDebug", kotlinCompilation.compileAllTaskName)
+        project.tasks.matching { it.name in lifecycleNames }.configureEach { it.dependsOn(reportTask) }
+
+        return reportFile.map { file ->
+            listOf(
+                SubpluginOption("enabled", "true"),
+                // The absolute location is internal; the file itself is a declared compile output above.
+                FilesSubpluginOption("reportFile", listOf(file.asFile)),
+            )
+        }
+    }
 }

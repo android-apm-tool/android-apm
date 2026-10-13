@@ -14,14 +14,14 @@ android-apm/
  └─ gradlew
 ```
 
-`java-gradle-plugin`이 Gradle 플러그인 descriptor를 만들고, 컴파일러 플러그인은 `META-INF/services`로 registrar와 옵션 처리기를 등록한다. `KotlinCompilerPluginSupportPlugin`은 Kotlin 컴파일에 플러그인 JAR과 옵션을 전달한다. 샘플은 `pluginManagement.includeBuild("../..")`로 Gradle 플러그인을 연결하고, 별도 dependency substitution으로 컴파일러 artifact도 로컬 모듈에서 가져온다. Maven Local이나 Plugin Portal에 배포할 필요가 없다. [Gradle 플러그인 개발](https://docs.gradle.org/9.3.0/userguide/implementing_gradle_plugins_binary.html), [Kotlin 컴파일러 플러그인](https://kotlinlang.org/docs/custom-compiler-plugins.html)
+`java-gradle-plugin`이 Gradle 플러그인 descriptor를 만들고, 컴파일러 플러그인은 `META-INF/services`로 registrar와 옵션 처리기를 등록한다. `KotlinCompilerPluginSupportPlugin`은 Kotlin 컴파일에 플러그인 JAR과 옵션을 전달한다. 샘플은 `pluginManagement.includeBuild("../..")`로 Gradle 플러그인을 연결하고, 별도 dependency substitution으로 컴파일러 artifact도 로컬 모듈에서 가져온다. Maven Local이나 Plugin Portal에 배포할 필요가 없다. [Gradle 플러그인 개발](https://docs.gradle.org/9.1.0/userguide/implementing_gradle_plugins_binary.html), [Kotlin 컴파일러 플러그인](https://kotlinlang.org/docs/custom-compiler-plugins.html)
 
-## 최초 검증 버전
+## 검증 버전
 
 | 항목 | 버전 |
 | --- | --- |
 | JDK / JVM target | 17 |
-| Gradle Wrapper | 9.3.0, 배포 ZIP SHA-256 검증 |
+| Gradle Wrapper | 9.1.0, 배포 ZIP SHA-256 검증 |
 | Kotlin / Compose compiler | 2.3.21 |
 | AGP | 9.0.0 |
 | compileSdk / targetSdk / minSdk | 36 / 36 / 26 |
@@ -47,14 +47,20 @@ Android 샘플은 SDK Platform 36과 Build Tools 36.0.0이 필요하다. `ANDROI
 # 설정 확인: 앱 컴파일·실행은 하지 않는다.
 ./gradlew -p samples/compose-app :app:apmDoctor
 
-# 앱 컴파일 중 IR 확장이 실행되는지 확인한다.
-./gradlew -p samples/compose-app :app:assembleDebug -Papm.irProbe=true --info
+# 일반 빌드에서 저장된 IR 진단 결과를 확인한다. --info나 강제 재컴파일은 필요 없다.
+./gradlew -p samples/compose-app :app:assembleDebug -Papm.irProbe=true
 
-# 활성 debug, 비활성 debug, release 제외를 실제 컴파일로 검증한다.
+# UP-TO-DATE, FROM-CACHE, configuration cache와 비활성 debug/release 제외를 검증한다.
 python3 scripts/verify-bootstrap.py
 ```
 
-`apm.irProbe`는 기본값이 false인 개발용 옵션이다. 현재는 이름이 정확히 `debug`인 Kotlin compilation에만 적용하며 flavor·테스트 compilation은 지원하지 않는다. true일 때 `APM IR probe:` 로그에 해당 IR 호출에서 발견한 샘플 Composable 이름이 나온다. UP-TO-DATE나 빌드 캐시 복원에서는 컴파일러가 실행되지 않을 수 있으므로 로그를 다시 확인하려면 검증 스크립트를 사용한다.
+`apm.irProbe`는 기본값이 false인 개발용 옵션이다. Android Studio에서는 샘플의 `gradle.properties`에 `apm.irProbe=true`를 설정하면 된다. 이름이 정확히 `debug`인 Kotlin compilation에만 적용하며 flavor·테스트 compilation은 지원하지 않는다.
+
+컴파일러는 마지막 IR 호출의 진단 결과를 `app/build/reports/android-apm/debug/ir-probe.txt`에 저장한다. 이 디렉터리는 Kotlin 컴파일 작업의 정식 출력이므로 빌드 캐시에 함께 저장·복원된다. 절대 출력 경로는 컴파일 입력에서 제외한다.
+
+`assembleDebug`·`bundleDebug`와 debug 소스 빌드에는 `apmReportDebug`가 연결된다. 이 작업은 컴파일이 성공한 뒤 저장된 결과를 lifecycle 로그로 출력한다. 컴파일이 `UP-TO-DATE`이거나 `FROM-CACHE`여도 출력 작업은 실행하므로 `--info`, `--rerun-tasks`, `--no-build-cache`, Clean이 필요 없다. 결과만 다시 보려면 `:app:apmReportDebug`를 실행한다. 컴파일 실패 후에는 이전 결과를 출력하지 않으며, 옵션을 끄거나 release를 빌드하면 보고 작업을 연결하지 않는다.
+
+이 파일은 마지막 IR 호출의 스냅샷이다. 증분 컴파일에서는 변경된 일부 파일만 포함할 수 있으며, 전체 소스의 결과를 병합한 화면 카탈로그나 Nav3 entry 연결 결과가 아니다. 여러 컴파일 호출의 결과 병합은 후속 수집기 작업이다.
 
 일반적인 개발 순서는 플러그인 수정 → `./gradlew build` → 샘플 컴파일 → IR 로그 확인이다. 샘플 적용과 컴파일러 SPI 연결은 별도로 검증해, Gradle 설정 문제와 IR 분석 문제를 구분한다.
 

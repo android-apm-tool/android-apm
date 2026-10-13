@@ -23,7 +23,7 @@ JDK 17에서 플러그인을 빌드하고 테스트한다. 샘플 검증에는 A
 python3 scripts/verify-bootstrap.py
 ```
 
-개발용 IR probe는 기본 비활성 상태이며 `-Papm.irProbe=true`로 debug 컴파일에서 확인한다. 샘플은 included build로 로컬 플러그인을 사용한다. 아직 외부 배포한 플러그인이 아니다.
+개발용 IR probe는 기본 비활성 상태이며 `-Papm.irProbe=true` 또는 `gradle.properties`의 `apm.irProbe=true`로 켠다. 일반 debug 빌드에서 마지막 IR 진단 결과를 출력하며, 컴파일이 `UP-TO-DATE`이거나 `FROM-CACHE`여도 결과를 확인할 수 있다. 샘플은 included build로 로컬 플러그인을 사용한다. 아직 외부 배포한 플러그인이 아니다.
 
 ## 대상
 
