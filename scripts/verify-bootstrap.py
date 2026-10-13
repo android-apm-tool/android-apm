@@ -19,9 +19,9 @@ def build_sample(name, tasks, enabled):
     command = [
         str(WRAPPER), "-p", "samples/compose-app", *tasks,
         f"-Papm.irProbe={str(enabled).lower()}",
-        "--build-cache", "--configuration-cache", "--console=plain",
+        "--build-cache", "--configuration-cache", "--console=plain", "--no-daemon",
         # Keep the verifier independent from Android Studio's Gradle distribution.
-        "--project-cache-dir", str(ROOT / "build" / "bootstrap-project-cache"),
+        "--project-cache-dir", str(ROOT / "build" / "bootstrap-verification-cache"),
     ]
     print(f"Building {name} ...", flush=True)
     result = subprocess.run(command, cwd=ROOT, text=True, encoding="utf-8", errors="replace",

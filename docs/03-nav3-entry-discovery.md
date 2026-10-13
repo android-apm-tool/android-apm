@@ -1,5 +1,7 @@
 # IR 기반 화면 발견과 Nav3 연결
 
+전체 발견기의 목표 설계다. 현재 구현은 debug/JVM 입력의 전체 수집, Nav3·콘텐츠 연결, 모듈 병합까지 포함한다. DI 자동 연결과 화면·상태 역할 분류는 후속 범위다. 구현된 파이프라인과 검증 근거는 [구현 결정](09-catalog-decisions-and-validation.md)을 따른다.
+
 ## 목표와 산출물
 
 선택한 variant의 분석 대상 소스에서 전체 Composable 선언, Compose UI 진입점, Nav3 키·콘텐츠 연결을 수집한다. 세 결과를 결합해 Nav3 안팎의 화면 정의와 후보를 최대한 발견한다. 앱 실행이나 콘텐츠 렌더링은 수집의 전제 조건이 아니다.
@@ -141,7 +143,7 @@ val provider = entryProvider<NavKey> {
 
 ## 모듈 산출물
 
-개념적인 모듈 카탈로그 형식이다. 실제 JSON 스키마는 구현 전에 고정한다.
+아래는 전체 설계의 개념적인 모듈 카탈로그 형식이다. 공개 보고서 형식과 지원 범위는 [카탈로그 문서](08-catalog-v1.md) 및 [읽기용 JSON v2 Schema](../schema/catalog-report-v2.schema.json)를 따른다. 전체 분석 사실은 내부 v1 중간 파일에 보존한다.
 
 ```json
 {

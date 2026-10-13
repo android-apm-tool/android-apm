@@ -18,6 +18,7 @@ class AndroidApmPlugin : KotlinCompilerPluginSupportPlugin {
     }
 
     override fun apply(target: Project) {
+        registerCatalogTasks(target, getPluginArtifact())
         target.tasks.register("apmDoctor", ApmDoctorTask::class.java) {
             it.group = "android apm"
             it.description = "Reports the bootstrap plugin configuration; does not compile or run the app."

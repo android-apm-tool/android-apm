@@ -1,6 +1,19 @@
 # 데이터 모델
 
-논리 모델의 제안이다. 저장 엔진, 직렬화 형식, API 경로는 아직 확정하지 않았다.
+전체 제품의 논리 모델 제안이다. 정적 수집기는 내부 JSON v1과 읽기용 JSON v2를 구현했다. 실행 데이터의 저장 엔진·직렬화 형식·API 경로는 미결정이다.
+
+## 현재 직렬화 계약
+
+| 구분 | 용도 | 스키마 |
+| --- | --- | --- |
+| 내부 카탈로그 v1 | 모듈 병합에 필요한 함수·값·호출·조건·선언·연결 사실 | [catalog-v1.schema.json](../schema/catalog-v1.schema.json) |
+| 공개 보고서 v2 | 경로 후보, UI·Nav3 연결, 참조 Composable, 소스·분석 상태·진단 | [catalog-report-v2.schema.json](../schema/catalog-report-v2.schema.json) |
+
+v2의 `composableIds`는 같은 문서의 `composables[].id`를 참조한다. 여러 호출 위치에서 같은 선언을 사용해도 정의는 한 번 기록하며, 오버로드 ID는 합치지 않는다. 호출별 전체 표현식·인자·조건은 내부 v1에 남긴다. 공개 보고서는 다시 병합할 수 있는 원본 모델이 아니다.
+
+`summary.collectedComposables`는 수집 선언 수, `referencedComposables`는 보고서의 UI 연결이 참조한 함수 수다. 외부 함수도 참조 목록에 포함하므로 두 수의 크기는 단순 비교할 수 없고 화면 개수로 사용하지 않는다. `screenCandidates`는 현재 `UNCLASSIFIED`이며 화면 정의와 동일하지 않다.
+
+v2는 출력 파일 경로를 유지하면서 스키마 버전을 변경한다. 이전 필드 대응과 실제 출력 항목은 [카탈로그 사용법](08-catalog-v1.md)을 따른다. 아래 전체 논리 모델의 모든 항목을 현재 JSON에서 제공하는 것은 아니다.
 
 ## 식별 범위
 
