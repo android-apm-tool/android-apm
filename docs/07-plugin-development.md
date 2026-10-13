@@ -1,15 +1,17 @@
 # 플러그인 개발 시작하기
 
-Android APM의 개발 기반은 두 JVM 모듈과 별도 Android 샘플 빌드로 구성한다. Gradle 플러그인은 빌드에 연결하는 진입점이고, Kotlin 컴파일러 플러그인은 컴파일 중 IR을 읽는 확장이다. 두 플러그인은 개발 머신에서 실행된다. 앱 프로세스에서 동작할 Android 에이전트는 이후 별도 모듈로 구현한다.
+Android APM의 개발 기반은 세 JVM 모듈과 별도 Android 샘플 빌드로 구성한다. Gradle 플러그인은 빌드에 연결하는 진입점이고, Kotlin 컴파일러 플러그인은 컴파일 중 IR을 읽는 확장이다. 두 플러그인은 개발 머신에서 실행되며 JSON 모델·연결 로직을 apm-catalog 모듈에서 공유한다. 앱 프로세스에서 동작할 Android 에이전트는 이후 별도 모듈로 구현한다.
 
 ## 저장소 구성
 
 ```text
 android-apm/
+ ├─ apm-catalog/             # JSON 모델, 정적 관계 연결, 직렬화
  ├─ apm-gradle-plugin/       # 플러그인 적용, 진단 작업, 컴파일러 플러그인 전달
  ├─ apm-compiler-plugin/     # 옵션 처리, K2 registrar, IR 확장
  ├─ samples/compose-app/    # 로컬 플러그인을 사용하는 Compose + Nav3 앱
  ├─ scripts/verify-bootstrap.py
+ ├─ scripts/verify-catalog.py
  ├─ gradle/libs.versions.toml
  └─ gradlew
 ```
@@ -32,6 +34,8 @@ android-apm/
 최신 버전을 자동 추종하지 않고 이 조합부터 검증한다. 의존 버전은 version catalog에, Gradle 버전은 wrapper 설정에 고정한다. AGP 9의 내장 Kotlin을 사용하며 Android 샘플에 `org.jetbrains.kotlin.android`를 적용하지 않는다. 샘플의 buildscript 의존성으로 KGP를 2.3.21에 맞춘다. [AGP 9의 KGP 버전 설정](https://developer.android.com/build/releases/agp-9-0-0-release-notes#upgrade-kgp), [KGP 호환 범위](https://kotlinlang.org/docs/gradle-configure-project.html)
 
 ## 개발과 확인
+
+카탈로그 수집·병합 작업과 지원 범위는 [카탈로그 v1](08-catalog-v1.md)을 참고한다.
 
 JDK 17을 준비한 뒤 저장소 루트에서 실행한다. 플러그인 자체 빌드에는 Android SDK가 필요 없다.
 

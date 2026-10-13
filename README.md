@@ -2,11 +2,12 @@
 
 Android 프로젝트에 플러그인을 적용해 화면과 접근 경로를 분석하고, 실제 디바이스에서 측정한 실행 흐름과 자원 사용량을 localhost에서 확인하는 도구.
 
-현재는 설계와 플러그인 개발 기반을 구성한 단계다. Gradle 플러그인, K2 IR 연결 확인용 컴파일러 플러그인, Compose·Nav3 샘플 앱을 포함한다. 화면 카탈로그 수집기, 실행 에이전트, 서버, 대시보드는 아직 구현하지 않았다. 설계 문서의 수집·병합·실행 작업과 데이터 형식은 구현 제안이다.
+Gradle/K2 IR 플러그인으로 Composable과 Nav3 entry·content 관계를 수집하고 모듈별 JSON 카탈로그를 생성·병합한다. Compose·Nav3 샘플 앱과 캐시 검증 스크립트를 포함한다. 실행 에이전트, 서버, 대시보드는 아직 구현하지 않았다. 정적 수집기의 지원 범위와 미해결 관계는 [카탈로그 v1](docs/08-catalog-v1.md)에 명시한다.
 
 ## 시작하기
 
 - [플러그인 개발 환경과 빌드 방법](docs/07-plugin-development.md)
+- [카탈로그 실행·JSON 형식·지원 범위](docs/08-catalog-v1.md)
 - [설계 문서 목차](docs/README.md)
 - [제품 요구사항과 확정된 화면 구성](docs/01-product-requirements.md)
 - [시스템 구조](docs/02-system-architecture.md)
@@ -20,7 +21,9 @@ JDK 17에서 플러그인을 빌드하고 테스트한다. 샘플 검증에는 A
 ```bash
 ./gradlew build
 ./gradlew -p samples/compose-app :app:apmDoctor
+./gradlew -p samples/compose-app :app:apmMergeDebugCatalog
 python3 scripts/verify-bootstrap.py
+python3 scripts/verify-catalog.py
 ```
 
 개발용 IR probe는 기본 비활성 상태이며 `-Papm.irProbe=true` 또는 `gradle.properties`의 `apm.irProbe=true`로 켠다. 일반 debug 빌드에서 마지막 IR 진단 결과를 출력하며, 컴파일이 `UP-TO-DATE`이거나 `FROM-CACHE`여도 결과를 확인할 수 있다. 샘플은 included build로 로컬 플러그인을 사용한다. 아직 외부 배포한 플러그인이 아니다.

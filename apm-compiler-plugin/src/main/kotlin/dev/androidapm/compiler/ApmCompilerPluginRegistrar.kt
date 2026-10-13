@@ -14,6 +14,13 @@ class ApmCompilerPluginRegistrar : CompilerPluginRegistrar() {
     override val supportsK2 = true
 
     override fun ExtensionStorage.registerExtensions(configuration: CompilerConfiguration) {
+        if (configuration.get(catalogEnabled, false)) {
+            fun required(key: org.jetbrains.kotlin.config.CompilerConfigurationKey<String>) =
+                requireNotNull(configuration.get(key)) { "Missing APM catalog option: $key" }
+            IrGenerationExtension.registerExtension(CatalogCollector(
+                required(catalogModule), required(catalogVariant), File(required(catalogRoot)), File(required(catalogOutput)),
+            ))
+        }
         if (!configuration.get(probeEnabled, false)) return
         IrGenerationExtension.registerExtension(
             ApmIrProbe(

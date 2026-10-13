@@ -6,7 +6,10 @@ plugins {
 kotlin { jvmToolchain(17) }
 
 dependencies {
+    compileOnly(project(":apm-catalog"))
+    testImplementation(project(":apm-catalog"))
     implementation(libs.kotlin.gradle.plugin.api)
+    compileOnly(libs.kotlin.gradle.plugin)
     testImplementation(gradleTestKit())
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.launcher)
@@ -34,3 +37,13 @@ tasks.processResources {
 }
 
 tasks.test { useJUnitPlatform() }
+
+tasks.pluginUnderTestMetadata {
+    pluginClasspath.from(project(":apm-catalog").tasks.named("jar"))
+}
+
+tasks.jar {
+    val catalog = project(":apm-catalog").tasks.named("jar")
+    dependsOn(catalog)
+    from(catalog.map { zipTree(it.outputs.files.singleFile) }) { exclude("META-INF/MANIFEST.MF") }
+}

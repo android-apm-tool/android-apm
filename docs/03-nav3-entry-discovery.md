@@ -141,7 +141,7 @@ val provider = entryProvider<NavKey> {
 
 ## 모듈 산출물
 
-개념적인 모듈 카탈로그 형식이다. 실제 JSON 스키마는 구현 전에 고정한다.
+아래는 전체 설계의 개념적인 모듈 카탈로그 형식이다. 구현된 v1 직렬화 형식과 지원 범위는 [카탈로그 v1](08-catalog-v1.md) 및 [JSON Schema](../schema/catalog-v1.schema.json)를 따른다.
 
 ```json
 {

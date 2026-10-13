@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/android-apm-tool/android-apm/schema/catalog-v1.schema.json",
+  "title": "Android APM static UI catalog v1",
+  "type": "object",
+  "required": ["schemaVersion", "moduleId", "variant", "scope", "collectionStatus", "resolutionStatus", "functions", "composableDeclarations", "entryDeclarations", "entryBindings", "providers", "uiRoots", "uiRootBindings", "navHosts", "navHostBindings", "screenCandidates", "diagnostics"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "moduleId": {"type": "string", "minLength": 1},
+    "variant": {"const": "debug"},
+    "collectionStatus": {"const": "COMPLETE_FOR_DECLARED_INPUTS"},
+    "resolutionStatus": {"$ref": "#/$defs/resolution"},
+    "scope": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}, "mode": {"const": "FULL_COMPILATION"}, "modules": {"type": "array", "items": {"type": "object"}}}},
+    "functions": {"$ref": "#/$defs/facts"},
+    "composableDeclarations": {"$ref": "#/$defs/facts"},
+    "values": {"$ref": "#/$defs/facts"},
+    "callRelations": {"$ref": "#/$defs/facts"},
+    "contentRelations": {"$ref": "#/$defs/facts"},
+    "contentContainers": {"$ref": "#/$defs/facts"},
+    "registrationFunctions": {"$ref": "#/$defs/facts"},
+    "diBindings": {"$ref": "#/$defs/facts"},
+    "providers": {"$ref": "#/$defs/facts"},
+    "uiRoots": {"$ref": "#/$defs/facts"},
+    "navHosts": {"$ref": "#/$defs/facts"},
+    "uiRootBindings": {"$ref": "#/$defs/facts"},
+    "navHostBindings": {"$ref": "#/$defs/facts"},
+    "entryDeclarations": {"type": "array", "items": {"type": "object", "required": ["id", "owner", "key", "content", "source", "api"], "properties": {"id": {"type": "string"}, "key": {"$ref": "#/$defs/expression"}, "content": {"$ref": "#/$defs/expression"}, "source": {"$ref": "#/$defs/source"}, "api": {"enum": ["ENTRY_DSL", "NAV_ENTRY"]}}}},
+    "entryBindings": {"type": "array", "items": {"type": "object", "required": ["id", "providerId", "declarationId", "key", "keyCandidates", "content", "composableCalls", "resolution", "context", "classification"], "properties": {"id": {"type": "string"}, "providerId": {"type": ["string", "null"]}, "declarationId": {"type": "string"}, "key": {"$ref": "#/$defs/expression"}, "content": {"$ref": "#/$defs/expression"}, "keyCandidates": {"type": "array", "items": {"$ref": "#/$defs/expression"}}, "composableCalls": {"$ref": "#/$defs/facts"}, "resolution": {"$ref": "#/$defs/resolution"}, "context": {"enum": ["REGISTRATION", "FALLBACK", "DIRECT_PROVIDER"]}, "classification": {"enum": ["NAV3_DESTINATION_CONTENT", "UNCLASSIFIED"]}}}},
+    "screenCandidates": {"type": "array", "items": {"type": "object", "required": ["id", "kind", "classification", "resolution", "composableCalls"], "properties": {"classification": {"const": "UNCLASSIFIED"}, "resolution": {"$ref": "#/$defs/resolution"}}}},
+    "missingModules": {"type": "array", "items": {"type": "string"}},
+    "collectionDiagnostics": {"$ref": "#/$defs/diagnostics"},
+    "diagnostics": {"$ref": "#/$defs/diagnostics"}
+  },
+  "$defs": {
+    "resolution": {"enum": ["RESOLVED", "PARTIAL"]},
+    "facts": {"type": "array", "items": {"type": "object"}},
+    "diagnostics": {"type": "array", "items": {"type": "object", "required": ["code"], "properties": {"code": {"type": "string", "minLength": 1}, "source": {"anyOf": [{"$ref": "#/$defs/source"}, {"type": "null"}]}}}},
+    "source": {"type": "object", "required": ["path", "offset", "line", "column"], "properties": {"path": {"type": "string"}, "offset": {"type": "integer"}, "line": {"type": ["integer", "null"]}, "column": {"type": ["integer", "null"]}}},
+    "expression": {"type": "object", "required": ["kind"], "properties": {"kind": {"enum": ["FUNCTION", "OBJECT", "CONSTANT", "TYPE", "CONSTRUCTOR", "REFERENCE", "CALL", "LIST", "CHOICE", "UNKNOWN"]}, "type": {"type": ["string", "null"]}, "ref": {"type": ["string", "null"]}, "values": {"type": "array", "items": {"$ref": "#/$defs/expression"}}, "source": {"$ref": "#/$defs/source"}}}
+  }
+}
