@@ -4,6 +4,8 @@
 
 ## 현재 직렬화 계약
 
+2026-10-14부터 병합 결과에 `ui-analysis.json`과 별도 `ui-evidence.json`을 추가한다. 선택적 디자인 매칭 결과는 `design-matches.json`이다. 각 파일은 v1 독립 스키마이며 현재 공개 카탈로그 v2를 대체하지 않는다. 실제 필드·근거·미확정 상태는 [UI 분석 계약](11-ui-diagnosis-and-design-matching.md)에 정리한다.
+
 | 구분 | 용도 | 스키마 |
 | --- | --- | --- |
 | 내부 카탈로그 v1 | 모듈 병합에 필요한 함수·값·호출·조건·선언·연결 사실 | [catalog-v1.schema.json](../schema/catalog-v1.schema.json) |

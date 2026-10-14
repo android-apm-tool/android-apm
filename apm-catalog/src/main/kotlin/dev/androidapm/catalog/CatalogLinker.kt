@@ -74,20 +74,29 @@ object CatalogLinker {
             entries.values.filter { it.string("id") !in attached }.forEach { bind(it, null, emptyMap()) }
             val rootBindings = data.getValue("uiRoots").map { root ->
                 val expression = root.records("arguments").firstOrNull { it.string("name") == "content" }?.get("value").record()
-                val (composables, status) = content(expression, emptyMap())
+                val result = content(expression, emptyMap())
+                val (composables, status) = result
                 record("rootId" to root["id"], "content" to expression, "composableCalls" to composables,
                     "navHostIds" to composables.filter { call -> data.getValue("navHosts").any { it["id"] == call["callId"] } }.map { it["callId"] },
-                    "resolution" to status)
+                    "resolution" to status, "usageTrace" to result.trace)
             }
             val candidates = data.getValue("contentContainers").flatMap { container ->
                 container.records("contentArguments").map { argument ->
                     val result = content(argument["value"].record(), emptyMap())
                     record("id" to container.string("id") + ":" + argument.string("name"),
                         "kind" to "CONTENT_CONTAINER", "source" to container["source"],
-                        "constructor" to container["name"], "arguments" to container["arguments"],
+                        "constructor" to container["name"], "arguments" to container.records("arguments").map { arg ->
+                            val constant = resolve(arg["value"].record(), emptyMap()).singleOrNull()?.takeIf { it["kind"] == "CONSTANT" }
+                            if (constant == null) arg else arg + record("value" to constant)
+                        },
                         "composableCalls" to result.first, "resolution" to result.second,
+                        "usageTrace" to result.trace,
                         "classification" to "UNCLASSIFIED", "reason" to "Content storage does not establish a screen boundary or provider binding")
                 }
+            }
+            val previews = functions.values.filter { it["preview"] == true }.map { function ->
+                val result = content(record("kind" to "FUNCTION", "ref" to function["symbol"]), emptyMap(), publishDiagnostics = false)
+                record("id" to "preview:" + function["id"], "symbol" to function["symbol"], "resolution" to result.second, "usageTrace" to result.trace)
             }
             val base = if (modules.size == 1) modules.single() else record(
                 "schemaVersion" to 1, "variant" to modules.firstOrNull()?.get("variant"),
@@ -99,6 +108,7 @@ object CatalogLinker {
                 "providers" to (data.getValue("providers") + directProviders).sortedBy { it.string("id") },
                 "navHostBindings" to hostBindings,
                 "uiRootBindings" to rootBindings,
+                "previewBindings" to previews,
                 "registrationFunctions" to entries.values.groupBy { it.string("owner") }.toSortedMap().map { (symbol, declarations) ->
                     record("symbol" to symbol, "declarationIds" to declarations.map { it.string("id") }.sorted())
                 },
@@ -128,7 +138,8 @@ object CatalogLinker {
         }
 
         fun bind(entry: Record, provider: String?, env: Map<String, Record>, context: String = "REGISTRATION") {
-            val (composables, status) = content(entry["content"].record(), env)
+            val result = content(entry["content"].record(), env)
+            val (composables, status) = result
             val keyCandidates = resolve(entry["key"].record(), env)
             val unresolvedKey = keyCandidates.isEmpty() || keyCandidates.any { it["typeParameter"] != null }
             val resolution = if (provider == null || status != "RESOLVED" || unresolvedKey) "PARTIAL" else "RESOLVED"
@@ -137,6 +148,7 @@ object CatalogLinker {
                 "providerId" to provider, "declarationId" to entry["id"], "context" to context,
                 "classification" to if (provider != null) "NAV3_DESTINATION_CONTENT" else "UNCLASSIFIED",
                 "key" to entry["key"], "content" to entry["content"], "composableCalls" to composables,
+                "usageTrace" to result.trace,
                 "keyCandidates" to keyCandidates,
                 "registrationArguments" to env,
                 "resolution" to resolution, "conditions" to entry["conditions"], "source" to entry["source"])
@@ -144,20 +156,24 @@ object CatalogLinker {
             if (unresolvedKey) diagnostics += record("code" to "UNRESOLVED_KEY", "declarationId" to entry["id"], "source" to entry["source"])
         }
 
-        fun content(expression: Record, env: Map<String, Record>): Pair<List<Record>, String> {
+        data class ContentResult(val first: List<Record>, val second: String, val trace: List<Record>)
+
+        fun content(expression: Record, env: Map<String, Record>, publishDiagnostics: Boolean = true): ContentResult {
             val found = linkedMapOf<String, Record>()
+            val trace = mutableListOf<Record>()
             var partial = false
             val invoked = traverse(expression, env, { code, source ->
                 partial = true
-                diagnostics += record("code" to code, "source" to source)
-            }) { call, _ ->
+                if (publishDiagnostics) diagnostics += record("code" to code, "source" to source)
+            }, { trace += it }) { call, _ ->
                 if (call["composable"] == true) found[call.string("id")] = record(
                     "callId" to call["id"],
                     "symbol" to call["target"], "name" to call["name"], "source" to call["source"], "conditions" to call["conditions"],
                     "declarationAvailable" to functions.containsKey(call.string("target")))
             }
             if (!invoked) partial = true
-            return found.values.sortedBy { it.string("symbol") + Json.encode(it["source"]) } to if (partial) "PARTIAL" else "RESOLVED"
+            return ContentResult(found.values.sortedBy { it.string("symbol") + Json.encode(it["source"]) },
+                if (partial) "PARTIAL" else "RESOLVED", trace.distinct())
         }
 
         fun resolve(expr: Record, env: Map<String, Record>, seen: Set<String> = emptySet()): List<Record> {
@@ -206,20 +222,33 @@ object CatalogLinker {
         fun traverse(
             expression: Record, initial: Map<String, Record>,
             problem: (String, Any?) -> Unit = { _, _ -> },
+            trace: (Record) -> Unit = {},
             visit: (Record, Map<String, Record>) -> Unit,
         ): Boolean {
             val seen = mutableSetOf<String>()
             var started = false
             var steps = 0
-            fun run(ref: String, env: Map<String, Record>, depth: Int) {
-                if (depth > 40) { problem("ANALYSIS_LIMIT_REACHED", functions[ref]?.get("source")); return }
+            fun issue(code: String, source: Any?, ref: String = "", call: Record = emptyMap(), related: List<String> = emptyList()) {
+                problem(code, source)
+                trace(record("kind" to "DIAGNOSTIC", "code" to code, "source" to source,
+                    "symbol" to ref, "callId" to call["id"], "relatedSymbols" to related))
+            }
+            fun run(ref: String, env: Map<String, Record>, depth: Int, parent: String = "", via: Record = emptyMap(),
+                    relation: String = "SEED", certainty: String = "STRUCTURAL", argument: String = "") {
                 val signature = ref + Json.encode(env)
+                val node = MessageDigest.getInstance("SHA-256").digest(signature.toByteArray(Charsets.UTF_8)).take(12).joinToString("") { "%02x".format(it) }
+                trace(record("kind" to "EDGE", "from" to parent, "to" to node, "symbol" to ref,
+                    "callId" to via["id"], "relation" to relation, "certainty" to certainty,
+                    "argument" to argument, "conditions" to via["conditions"], "source" to (via["source"] ?: functions[ref]?.get("source"))))
+                if (depth > 40) { issue("ANALYSIS_LIMIT_REACHED", functions[ref]?.get("source"), ref, via); return }
                 if (!seen.add(signature)) return
-                if (++steps > 5000) { problem("ANALYSIS_LIMIT_REACHED", functions[ref]?.get("source")); return }
-                val function = functions[ref] ?: run { problem("UNAVAILABLE_FUNCTION_BODY", null); return }
-                if (function["hasBody"] == false) problem("UNAVAILABLE_FUNCTION_BODY", function["source"])
+                if (++steps > 5000) { issue("ANALYSIS_LIMIT_REACHED", functions[ref]?.get("source"), ref, via); return }
+                val function = functions[ref] ?: run { issue("UNAVAILABLE_FUNCTION_BODY", null, ref, via); return }
+                if (function["hasBody"] == false) issue("UNAVAILABLE_FUNCTION_BODY", function["source"], ref, via)
                 started = true
                 calls[ref].orEmpty().forEach { call ->
+                    trace(record("kind" to "CALL", "node" to node, "owner" to ref, "callId" to call["id"],
+                        "target" to call["target"], "name" to call["name"], "conditions" to call["conditions"], "source" to call["source"]))
                     visit(call, env)
                     // Registration and storage do not invoke content. It has its own binding traversal.
                     if (call.string("id") in entries || call.string("name") == "androidx.navigation3.runtime.entryProvider" ||
@@ -230,13 +259,13 @@ object CatalogLinker {
                     val engineTargets = bytecodeTargets[call.string("id")].orEmpty()
                         .flatMap { (it["targets"] as? List<*>)?.filterIsInstance<String>().orEmpty() }.distinct()
                     if (engineTargets.isNotEmpty()) {
-                        problem("BYTECODE_MAY_TARGETS", call["source"])
+                        issue("BYTECODE_MAY_TARGETS", call["source"], ref, call)
                         engineTargets.filter { it != target }.forEach { ref ->
                             functions[ref]?.takeIf { it["composable"] == true }?.let { candidate ->
                                 visit(call + record("id" to call.string("id") + ":bytecode:" + candidate["id"],
                                     "target" to ref, "name" to candidate["name"], "composable" to true), env)
                             }
-                            run(ref, env, depth + 1)
+                            run(ref, env, depth + 1, node, call, "BYTECODE_TARGET", "MAY")
                         }
                     }
                     val bound = env + arguments.associate { it.string("parameter") to substitute(it["value"].record(), env) } +
@@ -245,32 +274,33 @@ object CatalogLinker {
                         val receiver = arguments.firstOrNull()?.get("value").record()
                         val choices = resolve(receiver, env)
                         if (choices.isEmpty()) {
-                            if (engineTargets.isEmpty() && (call["composable"] == true || receiver.string("type").contains("Composable"))) problem("UNRESOLVED_CONTENT_FLOW", call["source"])
+                            if (engineTargets.isEmpty() && (call["composable"] == true || receiver.string("type").contains("Composable"))) issue("UNRESOLVED_CONTENT_FLOW", call["source"], ref, call)
                         } else {
-                            if (choices.size > 1) problem("DYNAMIC_CONTENT_CANDIDATES", call["source"])
-                            choices.filter { it.string("kind") == "FUNCTION" }.forEach { run(it.string("ref"), bound, depth + 1) }
+                            if (choices.size > 1) issue("DYNAMIC_CONTENT_CANDIDATES", call["source"], ref, call)
+                            choices.filter { it.string("kind") == "FUNCTION" }.forEach { run(it.string("ref"), bound, depth + 1, node, call, "INVOKE", if (choices.size > 1) "MAY" else certainty) }
                         }
                     } else if (target in functions) {
-                        if (functions[target]?.get("overridable") == true && engineTargets.isEmpty()) problem("UNRESOLVED_VIRTUAL_DISPATCH", call["source"])
-                        run(target, bound, depth + 1)
+                        val virtual = functions[target]?.get("overridable") == true
+                        if (virtual && engineTargets.isEmpty()) issue("UNRESOLVED_VIRTUAL_DISPATCH", call["source"], ref, call)
+                        run(target, bound, depth + 1, node, call, "CALL", if (virtual) "MAY" else certainty)
                     } else {
                         arguments.filterNot { ContentSemantics.follows(name, it) }.forEach { argument ->
-                            if (resolve(argument["value"].record(), env).any { it["kind"] == "FUNCTION" && it.string("ref") in uiBearingFunctions })
-                                problem("UNMODELED_CALLBACK_CONTENT", call["source"])
+                            val related = resolve(argument["value"].record(), env).filter { it["kind"] == "FUNCTION" && it.string("ref") in uiBearingFunctions }.map { it.string("ref") }
+                            if (related.isNotEmpty()) issue("UNMODELED_CALLBACK_CONTENT", call["source"], ref, call, related)
                         }
                         arguments.filter { ContentSemantics.follows(name, it) }.forEach { arg ->
                             val choices = resolve(arg["value"].record(), env).filter { it.string("kind") == "FUNCTION" }
-                            if (choices.isEmpty()) problem("UNRESOLVED_CONTENT_FLOW", call["source"])
-                            if (!ContentSemantics.known(name)) problem("UNRESOLVED_EXTERNAL_CONTENT_SLOT", call["source"])
+                            if (choices.isEmpty()) issue("UNRESOLVED_CONTENT_FLOW", call["source"], ref, call)
+                            if (!ContentSemantics.known(name)) issue("UNRESOLVED_EXTERNAL_CONTENT_SLOT", call["source"], ref, call, choices.map { it.string("ref") })
                             choices.forEach {
-                                run(it.string("ref"), bound, depth + 1)
+                                run(it.string("ref"), bound, depth + 1, node, call, "SLOT", if (ContentSemantics.known(name)) certainty else "MAY", arg.string("name"))
                             }
                         }
                     }
                 }
             }
             val choices = resolve(expression, initial)
-            if (choices.isEmpty() && expression.isNotEmpty()) problem("UNRESOLVED_CONTENT_FLOW", expression["source"])
+            if (choices.isEmpty() && expression.isNotEmpty()) issue("UNRESOLVED_CONTENT_FLOW", expression["source"])
             choices.filter { it.string("kind") == "FUNCTION" }.forEach { run(it.string("ref"), initial, 0) }
             return started
         }

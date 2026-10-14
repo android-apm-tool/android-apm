@@ -123,6 +123,7 @@ object CatalogReport {
                 }
                 "OBJECT" -> result["name"] = value["ref"]
                 "LIST", "CHOICE" -> result["values"] = value.records("values").map(::expression)
+                "BRANCH" -> { result["test"] = expression(value["test"].record()); result["excluded"] = value.records("excluded").map(::expression) }
                 "FUNCTION" -> functions[value.string("ref")]?.get("name")?.let { result["name"] = it }
                 "CALL", "CONSTRUCTOR" -> result["name"] = value["name"]
                 "REFERENCE" -> {

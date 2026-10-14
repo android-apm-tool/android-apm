@@ -35,6 +35,8 @@ jobs:
         run: python3 scripts/verify-bootstrap.py
       - name: Verify full catalog snapshots and caches
         run: python3 scripts/verify-catalog.py
+      - name: Verify UI diagnosis and design matching
+        run: python3 scripts/verify-ui-analysis.py
       - name: Upload verification reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -45,3 +47,4 @@ jobs:
             apm-*/build/test-results/
             build/bootstrap-verification/
             build/catalog-verification/
+            build/ui-verification/

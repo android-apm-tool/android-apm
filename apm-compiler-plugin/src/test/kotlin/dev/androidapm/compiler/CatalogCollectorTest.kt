@@ -43,7 +43,12 @@ class CatalogCollectorTest {
             @Composable fun <T> NavDisplay(entryProvider: (T) -> NavEntry<T>) {}
         """.trimIndent()) }
         val report = directory.resolve("catalog.json")
-        val args = mutableListOf(annotations.toString(), nav.toString(), input.toString(), host.toString(),
+        val preview = directory.resolve("Preview.kt").apply { writeText("""
+            package androidx.compose.ui.tooling.preview
+            @Target(AnnotationTarget.FUNCTION, AnnotationTarget.ANNOTATION_CLASS)
+            annotation class Preview
+        """.trimIndent()) }
+        val args = mutableListOf(annotations.toString(), nav.toString(), input.toString(), host.toString(), preview.toString(),
             "-d", directory.resolve("classes").toString(), "-no-stdlib", "-no-reflect", "-jvm-target", "17",
             "-classpath", Path.of(Unit::class.java.protectionDomain.codeSource.location.toURI()).toString(),
             "-Xplugin=" + System.getProperty("apm.test.pluginJar"))
@@ -55,6 +60,21 @@ class CatalogCollectorTest {
         val exit = PrintStream(output).use { K2JVMCompiler().exec(it, *args.toTypedArray()) }
         assertEquals(ExitCode.OK, exit, output.toString(Charsets.UTF_8))
         return Json.decode(report.readText()).record()
+    }
+
+    @Test fun `custom preview annotations and else exclusions survive real compiler collection`() {
+        val catalog = compile("""
+            @androidx.compose.ui.tooling.preview.Preview annotation class CustomPreview
+            @CustomPreview @Composable fun Sample() { State(true) }
+            @Composable fun State(flag: Boolean) { if (flag) First() else Second() }
+            @Composable fun First() {}
+            @Composable fun Second() {}
+        """.trimIndent())
+        assertEquals(true, catalog.records("functions").single { it["name"] == "fixture.Sample" }["preview"])
+        val second = catalog.records("callRelations").single { it["name"] == "fixture.Second" }
+        assertTrue(second.records("conditions").single().records("excluded").isNotEmpty())
+        val analysis = UiAnalysis.create(catalog).report
+        assertTrue((analysis.records("declarations").single { it["name"] == "fixture.Second" }["reasonCodes"] as List<*>).contains("PREVIEW_REACHABLE"))
     }
 
     @Test fun `whole content includes wrapper and both branches but not same named fake DSL`() {
