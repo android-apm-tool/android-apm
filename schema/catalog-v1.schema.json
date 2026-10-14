@@ -36,6 +36,6 @@
     "facts": {"type": "array", "items": {"type": "object"}},
     "diagnostics": {"type": "array", "items": {"type": "object", "required": ["code"], "properties": {"code": {"type": "string", "minLength": 1}, "source": {"anyOf": [{"$ref": "#/$defs/source"}, {"type": "null"}]}}}},
     "source": {"type": "object", "required": ["path", "offset", "line", "column"], "properties": {"path": {"type": "string"}, "offset": {"type": "integer"}, "line": {"type": ["integer", "null"]}, "column": {"type": ["integer", "null"]}}},
-    "expression": {"type": "object", "required": ["kind"], "properties": {"kind": {"enum": ["FUNCTION", "OBJECT", "CONSTANT", "TYPE", "CONSTRUCTOR", "REFERENCE", "CALL", "LIST", "CHOICE", "UNKNOWN"]}, "type": {"type": ["string", "null"]}, "ref": {"type": ["string", "null"]}, "values": {"type": "array", "items": {"$ref": "#/$defs/expression"}}, "source": {"$ref": "#/$defs/source"}}}
+    "expression": {"type": "object", "required": ["kind"], "properties": {"kind": {"enum": ["FUNCTION", "OBJECT", "CONSTANT", "TYPE", "CONSTRUCTOR", "REFERENCE", "CALL", "LIST", "CHOICE", "BRANCH", "UNKNOWN"]}, "type": {"type": ["string", "null"]}, "ref": {"type": ["string", "null"]}, "values": {"type": "array", "items": {"$ref": "#/$defs/expression"}}, "source": {"$ref": "#/$defs/source"}}}
   }
 }

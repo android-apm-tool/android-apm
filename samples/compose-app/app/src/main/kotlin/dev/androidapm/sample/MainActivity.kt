@@ -13,6 +13,8 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.window.Dialog
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.ui.NavDisplay
 
@@ -51,6 +53,7 @@ fun DetailScreen() {
         item { repeat(2) { RepeatedItem() } }
         item { listOf("one", "two").forEachIndexed { _, _ -> IndexedItem() } }
         item { RenderSlot(SampleRenderer()) }
+        item { StatePanel(showError = false) }
     }
 }
 
@@ -63,3 +66,20 @@ class SampleRenderer : Renderer { @Composable override fun Content() { Dispatche
 @Composable fun DispatchedItem() { BasicText("Dispatched item") }
 // A declaration without a known binding must still be inspectable in the public catalog.
 @Composable fun UnlinkedItem() { BasicText("Not registered") }
+
+@Composable fun StatePanel(showError: Boolean) {
+    if (showError) BasicText("Failed to load") else BasicText("Loaded")
+    if (showError) Dialog(onDismissRequest = {}) { SharedDialogContent() }
+}
+@Composable fun SharedDialogContent() { BasicText("Retry") }
+
+@Preview(name = "Normal")
+@Preview(name = "Large", fontScale = 1.5f)
+annotation class SamplePreviews
+
+@SamplePreviews
+@Composable fun PreviewOnly() { PreviewOnlyItem() }
+@Composable fun PreviewOnlyItem() { BasicText("Preview fixture") }
+
+// Both origins must survive: this preview renders code that is also in a destination.
+@Preview @Composable fun SharedPreview() { StatePanel(showError = true) }

@@ -13,6 +13,7 @@ kotlin-compiler = { module = "org.jetbrains.kotlin:kotlin-compiler-embeddable", 
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 junit-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 compose-foundation = { module = "androidx.compose.foundation:foundation", version.ref = "compose" }
+compose-preview = { module = "androidx.compose.ui:ui-tooling-preview", version.ref = "compose" }
 activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity" }
 navigation3-ui = { module = "androidx.navigation3:navigation3-ui", version.ref = "nav3" }
 

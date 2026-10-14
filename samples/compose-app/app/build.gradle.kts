@@ -28,5 +28,6 @@ kotlin { jvmToolchain(17) }
 dependencies {
     implementation(libs.activity.compose)
     implementation(libs.compose.foundation)
+    implementation(libs.compose.preview)
     implementation(libs.navigation3.ui)
 }

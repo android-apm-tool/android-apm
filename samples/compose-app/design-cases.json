@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "snapshot": {"origin": "synthetic-regression-fixture", "version": "1"},
+  "cases": [
+    {
+      "id": "sample-home", "name": "Open detail", "kind": "BASE", "texts": ["Open detail"],
+      "review": {"origin": "FIXTURE_REVIEW", "anchors": [{"name": "dev.androidapm.sample.HomeScreen", "source": {"path": "app/src/main/kotlin/dev/androidapm/sample/MainActivity.kt"}}]}
+    },
+    {
+      "id": "sample-error", "name": "Failed to load", "kind": "STATE", "scenario": {"showError": true},
+      "texts": ["Failed to load", "Retry"],
+      "review": {"origin": "FIXTURE_REVIEW", "anchors": [{"name": "dev.androidapm.sample.StatePanel", "source": {"path": "app/src/main/kotlin/dev/androidapm/sample/MainActivity.kt"}}]}
+    },
+    {
+      "id": "sample-missing", "name": "Nonexistent payment receipt", "kind": "BASE", "texts": ["Nonexistent payment receipt"]
+    }
+  ]
+}

@@ -14,6 +14,7 @@ import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.ir.visitors.IrVisitorVoid
 import org.jetbrains.kotlin.ir.visitors.acceptChildrenVoid
+import org.jetbrains.kotlin.ir.visitors.acceptVoid
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import java.io.File
@@ -60,7 +61,13 @@ internal class CatalogCollector(
                         "packageName" to file.packageFqName.asString(),
                         "hasBody" to (declaration.body != null),
                         "overridable" to (declaration is IrSimpleFunction && declaration.modality != org.jetbrains.kotlin.descriptors.Modality.FINAL),
-                        "parameters" to declaration.parameters.map { p -> record("ref" to symbol(p), "name" to p.name.asString(), "type" to p.type.render()) },
+                        "enclosingFunction" to previous,
+                        "returnType" to declaration.returnType.render(),
+                        "overrides" to ((declaration as? IrSimpleFunction)?.overriddenSymbols?.mapNotNull { it.owner.fqNameWhenAvailable?.asString() } ?: emptyList<String>()),
+                        "annotations" to declaration.annotations.mapNotNull { it.symbol.owner.parentAsClass.fqNameWhenAvailable?.asString() },
+                        "preview" to declaration.annotations.any { isPreview(it) },
+                        "sourceSet" to relative(file.fileEntry.name).substringAfter("/src/", "unknown").substringBefore('/'),
+                        "parameters" to declaration.parameters.map { p -> record("ref" to symbol(p), "name" to p.name.asString(), "type" to p.type.render(), "composableType" to composableType(p.type)) },
                         "source" to location(declaration),
                     )
                     val annotations = declaration.annotations.mapNotNull { it.symbol.owner.parentAsClass.fqNameWhenAvailable?.asString() }
@@ -92,10 +99,16 @@ internal class CatalogCollector(
                     }
                     super.visitReturn(expression)
                 }
-                override fun visitBranch(branch: IrBranch) {
-                    conditions += expression(branch.condition)
-                    super.visitBranch(branch)
-                    conditions.removeAt(conditions.lastIndex)
+                override fun visitWhen(expression: IrWhen) {
+                    val preceding = mutableListOf<Record>()
+                    expression.branches.forEach { branch ->
+                        branch.condition.acceptVoid(this)
+                        val test = expression(branch.condition)
+                        conditions += record("kind" to "BRANCH", "test" to test, "excluded" to preceding.toList())
+                        branch.result.acceptVoid(this)
+                        conditions.removeAt(conditions.lastIndex)
+                        preceding += test
+                    }
                 }
                 override fun visitCall(expression: IrCall) {
                     collectCall(expression)
@@ -204,6 +217,14 @@ internal class CatalogCollector(
 
     private fun composableType(type: IrType): Boolean = type.annotations.any {
         it.symbol.owner.parentAsClass.fqNameWhenAvailable?.asString() == "androidx.compose.runtime.Composable"
+    }
+
+    private fun isPreview(annotation: IrConstructorCall, seen: Set<String> = emptySet()): Boolean {
+        val klass = annotation.symbol.owner.parentAsClass
+        val name = klass.fqNameWhenAvailable?.asString() ?: return false
+        if (name == "androidx.compose.ui.tooling.preview.Preview") return true
+        if (name in seen || seen.size >= 16) return false
+        return klass.annotations.any { isPreview(it, seen + name) }
     }
 
     private fun typeParameterSymbol(parameter: IrTypeParameter): String =

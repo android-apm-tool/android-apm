@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "title": "Design correspondence results v1",
+  "type": "object", "required": ["schemaVersion", "matcherVersion", "catalogFingerprint", "designFingerprint", "summary", "cases", "evaluation", "limitations"],
+  "properties": {
+    "schemaVersion": {"const": 1}, "cases": {"type": "array", "items": {"type": "object", "required": ["id", "frameId", "name", "automatic", "reviewed", "issues"], "properties": {
+      "automatic": {"type": "object", "required": ["status", "candidates"], "properties": {"status": {"enum": ["CANDIDATES_ONLY", "NO_CANDIDATE"]}}},
+      "reviewed": {"type": "object", "required": ["status", "anchors", "scenarioStatus", "implementationStatus", "renderStatus"], "properties": {"renderStatus": {"const": "NOT_OBSERVED"}}}
+    }}},
+    "evaluation": {"type": "object", "required": ["status", "recall", "precision"], "properties": {
+      "status": {"const": "GROUND_TRUTH_REQUIRED"}, "recall": {"type": "null"}, "precision": {"type": "null"}
+    }}
+  }
+}

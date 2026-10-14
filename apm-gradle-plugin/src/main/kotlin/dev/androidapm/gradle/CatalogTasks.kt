@@ -83,6 +83,8 @@ abstract class MergeCatalogTask : DefaultTask() {
     @get:Input abstract val missingModules: ListProperty<String>
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val analysisFile: RegularFileProperty
     @get:OutputFile abstract val catalogFile: RegularFileProperty
+    @get:OutputFile abstract val uiAnalysisFile: RegularFileProperty
+    @get:OutputFile abstract val uiEvidenceFile: RegularFileProperty
 
     @TaskAction fun merge() {
         val strings = HashMap<String, String>()
@@ -98,8 +100,25 @@ abstract class MergeCatalogTask : DefaultTask() {
         result["analysis"] = analysis["analysis"]
         result["missingModules"] = missingModules.get()
         if (missingModules.get().isNotEmpty()) result["resolutionStatus"] = "PARTIAL"
+        val ui = UiAnalysis.create(result)
+        writeCatalog(uiEvidenceFile.get().asFile, ui.evidence, pretty = true)
+        writeCatalog(uiAnalysisFile.get().asFile, ui.report, pretty = true)
         writeCatalog(catalogFile.get().asFile, CatalogReport.create(result), pretty = true)
         logger.lifecycle("Android APM merged ${modules.size} module(s): ${catalogFile.get().asFile.absolutePath}")
+    }
+}
+
+/** Design changes invalidate matching without recompiling the app or rerunning bytecode analysis. */
+@CacheableTask
+abstract class MatchDesignTask : DefaultTask() {
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val uiAnalysisFile: RegularFileProperty
+    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val designFile: RegularFileProperty
+    @get:OutputFile abstract val matchesFile: RegularFileProperty
+    @TaskAction fun match() {
+        val ui = Json.decode(uiAnalysisFile.get().asFile.readText(Charsets.UTF_8)).record()
+        val design = Json.decode(designFile.get().asFile.readText(Charsets.UTF_8)).record()
+        writeCatalog(matchesFile.get().asFile, DesignMatcher.match(ui, design), pretty = true)
+        logger.lifecycle("Android APM design matches: ${matchesFile.get().asFile.absolutePath}")
     }
 }
 
@@ -193,6 +212,15 @@ internal fun registerCatalogTasks(project: Project, artifact: SubpluginArtifact)
             it.missingModules.convention(emptyList())
             it.analysisFile.set(analyze.flatMap { task -> task.analysisFile })
             it.catalogFile.set(project.layout.buildDirectory.file("reports/android-apm/catalog/debug/project-catalog.json"))
+            it.uiAnalysisFile.set(project.layout.buildDirectory.file("reports/android-apm/catalog/debug/ui-analysis.json"))
+            it.uiEvidenceFile.set(project.layout.buildDirectory.file("intermediates/android-apm/debug/analysis/ui-evidence.json"))
+        }
+        project.tasks.register("apmMatchDebugDesign", MatchDesignTask::class.java) {
+            it.group = "android apm"
+            it.description = "Matches a versioned design specification; set -Papm.designSpec=<file>."
+            it.uiAnalysisFile.set(merge.flatMap { task -> task.uiAnalysisFile })
+            it.designFile.set(project.layout.file(project.providers.gradleProperty("apm.designSpec").map { path -> project.rootProject.file(path) }))
+            it.matchesFile.set(project.layout.buildDirectory.file("reports/android-apm/catalog/debug/design-matches.json"))
         }
         project.gradle.projectsEvaluated {
             fun dependencyPaths(): List<String> {

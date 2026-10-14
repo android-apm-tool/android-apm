@@ -1,6 +1,6 @@
 # SootUp/Heros 분석기: 결정 배경과 파이프라인
 
-기준일: 2026-10-14. 이 문서는 룰업 누락 조사에서 나온 질문, 설계 오류, 오픈소스 엔진 채택 이유와 실제 구현 범위를 기록한다. 이전 구현의 검증 스냅샷은 [09번 문서](09-catalog-decisions-and-validation.md)에 남긴다.
+기준일: 2026-10-14. 이 문서는 [엔진 도입 PR #5](https://github.com/android-apm-tool/android-apm/pull/5) 시점의 룰업 누락 조사, 설계 오류, 오픈소스 엔진 채택 이유와 구현 범위를 기록한다. 이전 카탈로그 검증은 [09번 문서](09-catalog-decisions-and-validation.md), 이후 미연결 진단·분류·디자인 대응 구현과 최신 검증은 [11번 문서](11-ui-diagnosis-and-design-matching.md)에 남긴다.
 
 ## 대화에서 확인한 문제
 
@@ -109,6 +109,8 @@ SootUp의 CHA는 `invokedynamic` 대상 확장을 제공하지 않으므로 Lamb
 분류는 함수에 영구적인 SCREEN 라벨 하나를 붙이는 방식보다 사용 문맥(binding)을 기준으로 진행한다. 동일 함수가 독립 화면과 sheet 내용으로 함께 쓰일 수 있기 때문이다. Preview/스크린샷은 테스트에 제공된 상태를 렌더링했다는 증거이며 전체 상태 발견의 증명이 아니다. 함수 실행, composition commit, 화면의 실제 가시성도 별도 관측값이어야 한다.
 
 ## 이후 전체 파이프라인 — 설계, 아직 미구현
+
+후속 갱신: 아래 단계 중 미연결 진단, 사용 문맥별 부분 역할 분류, 디자인 후보 검색과 수동 근거 재검증은 [11번 구현](11-ui-diagnosis-and-design-matching.md)에 추가됐다. 렌더링·실기기 관측과 전체 화면 발견률 평가는 여전히 미구현/미측정이다.
 
 ```mermaid
 flowchart LR
