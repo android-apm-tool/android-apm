@@ -247,12 +247,13 @@ def _execute_inside(root, source, command, bundle=None, timeout=1800, cancel=Non
     if copied["status"] == "COMPLETED":
         for path in sorted((run / "work/project").rglob("*")):
             if path.is_file():
-                input_digest.update(path.relative_to(run / "work/project").as_posix().encode())
-                input_digest.update(b"\0")
+                relative = path.relative_to(run / "work/project").as_posix().encode()
+                input_digest.update(len(relative).to_bytes(8, 'big'))
+                input_digest.update(relative)
+                input_digest.update(path.stat().st_size.to_bytes(8, 'big'))
                 with path.open("rb") as stream:
                     for block in iter(lambda: stream.read(1024 * 1024), b""):
                         input_digest.update(block)
-                input_digest.update(b"\0")
     result = copied if copied["status"] != "COMPLETED" else traced(boundary(mounts + ["--chdir", "/work/project"]) + command, run / "audit", timeout, cancel)
     if bundle is not None:
         try:

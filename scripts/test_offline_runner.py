@@ -160,6 +160,14 @@ class Probe { public static void main(String[] args) throws Exception {
         self.assertNotEqual(first["runId"], again["runId"])
         self.assertEqual(1, again["probe"]["blockedAttempts"])
 
+    def test_snapshot_digest_cannot_confuse_file_boundaries_with_content(self):
+        (self.source / 'a').write_bytes(b'foo\0b\0bar')
+        first, _ = self.run_fixture('pass')
+        (self.source / 'a').write_bytes(b'foo')
+        (self.source / 'b').write_bytes(b'bar')
+        second, _ = self.run_fixture('pass')
+        self.assertNotEqual(first['inputDigest'], second['inputDigest'])
+
     def test_cancelled_run_never_publishes(self):
         cancel = self.root / "cancel"
         cancel.touch()
