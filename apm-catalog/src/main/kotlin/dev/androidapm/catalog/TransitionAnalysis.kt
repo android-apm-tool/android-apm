@@ -98,7 +98,7 @@ object TransitionAnalysis {
             return TransitionResult(report, record("schemaVersion" to 1, "catalogFingerprint" to report["catalogFingerprint"],
                 "evidence" to evidence.map { (id, v) -> record("id" to id) + v }))
         }
-        fun budget(depth: Int): Boolean = if (++visits > 100_000 || depth > 48) { truncated = true; false } else true
+        fun budget(depth: Int): Boolean = if (++visits > 100_000 || depth > 192) { truncated = true; false } else true
         fun invoke(fn: Record, args: List<Record>, parent: Frame, c: Record, event: String?, seen: Set<String>, depth: Int): List<Frame> {
             if (!budget(depth)) return listOf(parent.copy(uncertain = true, stop = "LIMIT"))
             val ref = fn.string("ref")

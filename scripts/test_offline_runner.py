@@ -6,8 +6,9 @@ import socket
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
-from offline_runner import Refused, checked_path, execute, forbidden_network
+from offline_runner import Refused, checked_path, execute, forbidden_network, core_policy
 from runner_bundle import seal, verify
 
 
@@ -122,9 +123,21 @@ class Probe { public static void main(String[] args) throws Exception {
         policy, _ = self.run_fixture("import subprocess\nsubprocess.run(['/usr/lib/jvm/java-17-openjdk-amd64/bin/java','Probe.java'],check=True)\n")
         self.assertEqual("EGRESS_ATTEMPT_BLOCKED", policy["status"])
 
+    def test_native_crash_cannot_generate_host_core_dump(self):
+        policy, run = self.run_fixture("import os,resource\nassert resource.getrlimit(resource.RLIMIT_CORE)==(0,0)\nos.abort()")
+        self.assertEqual("WORKER_FAILED", policy["status"])
+        self.assertEqual("HARD_LIMIT_ZERO_AND_NO_HOST_HELPER", policy["coreDumpPolicy"])
+        self.assertFalse(any(path.name.startswith('core') for path in (run / 'work/project').iterdir()))
+
     def test_a_successful_external_syscall_invalidates_boundary(self):
         attempts = forbidden_network('42 connect(3, {sa_family=AF_INET, sin_addr=inet_addr("192.0.2.1")}, 16) = 0')
         self.assertEqual([{"family": "IPv4", "blocked": False}], attempts)
+
+    def test_host_crash_forwarding_is_rejected_before_source_read(self):
+        for pattern in ("|/host/helper %p", "@/host/collector.socket"):
+            with patch.object(Path, 'read_text', return_value=pattern):
+                with self.assertRaisesRegex(Refused, 'HOST_CRASH_COLLECTOR_FORBIDDEN'):
+                    core_policy()
 
     def test_hosted_controller_refuses_before_source_is_opened(self):
         old = os.environ.get("GITHUB_ACTIONS")

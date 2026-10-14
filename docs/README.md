@@ -18,7 +18,7 @@
 | [10. SootUp/Heros 분석기](10-sootup-heros-analysis.md) | 누락 반례와 설계 오류, 대화에서 선택한 이유, 엔진·IFDS·source bridge, 구현/후속 파이프라인 |
 | [11. UI 진단·분류·디자인 대응](11-ui-diagnosis-and-design-matching.md) | 미연결 원인, Preview·문맥별 역할, 조건 근거, 디자인 후보와 수동 근거 분리, 반례·캐시 검증 |
 | [12. AI 없는 전환·접근 경로 상세 설계](12-transition-and-access-path-design.md) | K2 IR·SootUp/Heros 역할, 추가 수집, 객체·DI·이벤트·상태 연결, 조건부 경로 탐색, 선택적 바이너리 분석, 반례·인수 기준 |
-| [13. 로컬 분석과 외부 전송 차단](13-local-analysis-security.md) | AI 미사용, 고객 통제 경계, 도구 사전 준비, 격리 runner, Gradle·캐시·CI·로그·viewer·디바이스의 전송 차단、실패 정책·비전송 시험 |
+| [13. 로컬 분석과 외부 전송 차단](13-local-analysis-security.md) | AI 미사용, 고객 통제 경계, 도구 사전 준비, 격리 runner, Gradle·캐시·CI·로그·viewer·디바이스의 전송 차단, 실패 정책·비전송 시험 |
 | [14. 전환·격리 구현과 검증](14-offline-transitions-implementation.md) | 구현 책임과 선택 이유, 실제 파이프라인, 실행 명령, 반례·샘플·룰업 검증, 미지원 capability |
 
 ## 결정 상태

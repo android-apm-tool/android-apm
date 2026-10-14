@@ -115,4 +115,25 @@ class TransitionAnalysisTest {
         assertEquals("TRUNCATED", limited["coverage"])
         assertTrue(limited.records("targets").any { it["status"] == "NO_PATH_FOUND_IN_EXPLORED_MODEL" })
     }
+    @Test fun `nested user wrappers still preserve trigger and stack identity`() {
+        val base = fixture()
+        val wrappers = (0..11).map { "Wrapper$it" }
+        val input = base + record(
+            "functions" to base.records("functions") + wrappers.map { record("symbol" to it, "parameters" to emptyList<Record>()) },
+            "callRelations" to base.records("callRelations") + wrappers.map { call(it, it, emptyList()) },
+            "functionBodies" to base.records("functionBodies").filter { it["owner"] != "Home" } + body("Home", listOf(statement(wrappers.first()))) +
+                wrappers.mapIndexed { index, name -> body(name, listOf(statement(wrappers.getOrNull(index + 1) ?: "button"))) })
+        assertTrue(TransitionAnalysis.create(input).report.records("transitions").any { it["linkage"] == "RESOLVED_IN_MODEL" })
+    }
+    @Test fun `known unrelated event types do not take each others is branches`() {
+        val flow = FlowValues(record("classes" to listOf(
+            record("symbol" to "Base", "superTypes" to listOf("kotlin.Any")),
+            record("symbol" to "First", "superTypes" to listOf("Base")),
+            record("symbol" to "Second", "superTypes" to listOf("Base")))))
+        fun test(type: String) = flow.eval(record("kind" to "TYPE_TEST", "value" to record("kind" to "INSTANCE", "type" to "First"), "testedType" to type))
+        assertEquals(constant(true), test("Base"))
+        assertEquals(constant(false), test("Second"))
+        val unknown = FlowValues(emptyMap()).eval(record("kind" to "TYPE_TEST", "value" to record("kind" to "INSTANCE", "type" to "ExternalType"), "testedType" to "Base"))
+        assertEquals("PREDICATE", unknown["kind"])
+    }
 }

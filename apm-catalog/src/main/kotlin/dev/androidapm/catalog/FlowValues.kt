@@ -22,6 +22,15 @@ internal class FlowValues(val catalog: Record) {
         return record("kind" to "UNKNOWN", "reason" to reason, "originRef" to origin)
     }
     fun constant(value: Any?) = record("kind" to "CONSTANT", "value" to value)
+    private fun subtype(actual: String, tested: String, seen: Set<String> = emptySet()): Boolean? {
+        val type = actual.removeSuffix("?").substringBefore('<')
+        if (type == tested || tested == "kotlin.Any") return true
+        if (type in seen) return null
+        if (type in setOf("kotlin.Any", "java.lang.Object")) return false
+        val declaration = classes[type] ?: return null
+        val parents = declaration.strings("superTypes").map { subtype(it, tested, seen + type) }
+        return when { true in parents -> true; null in parents -> null; else -> false }
+    }
     fun closure(ref: String, env: Map<String, Record>): Record {
         val used = captures.getOrPut(ref) { capturedReferences(ref) }
         val captured = env.filterKeys { it in used || it in setOf("@context", "@allocationContext", "@receiver") || it.startsWith("@local:") }
@@ -96,9 +105,9 @@ internal class FlowValues(val catalog: Record) {
                 val value = next(expr["value"].record())
                 if (value["kind"] == "INSTANCE") {
                     val type = value.string("type")
-                    val tested = expr.string("testedType").removeSuffix("?")
-                    val known = type == tested || classes[type]?.strings("superTypes")?.contains(tested) == true
-                    if (known) constant(expr["negated"] != true) else record("kind" to "PREDICATE", "operation" to "TYPE_TEST", "value" to value, "testedType" to tested, "negated" to expr["negated"])
+                    val tested = expr.string("testedType").removeSuffix("?").substringBefore('<')
+                    val known = subtype(type, tested)
+                    if (known != null) constant(known != (expr["negated"] == true)) else record("kind" to "PREDICATE", "operation" to "TYPE_TEST", "value" to value, "testedType" to tested, "negated" to expr["negated"])
                 } else record("kind" to "PREDICATE", "operation" to "TYPE_TEST", "value" to value, "testedType" to expr["testedType"], "negated" to expr["negated"])
             }
             "CHOICE" -> {

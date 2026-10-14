@@ -64,6 +64,7 @@ jobs:
           # Ephemeral hosted runner, PUBLIC synthetic fixtures only. Production must
           # configure its own approved user-namespace policy; the runner never relaxes it.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo sysctl -w kernel.core_pattern=core
           JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew --version
       - name: Verify OS boundary, descendants, cancellation and bundle integrity
         run: python3 scripts/test_offline_runner.py

@@ -11,6 +11,10 @@ import json
 import os
 from pathlib import Path
 import re
+try:
+    import resource
+except ImportError:
+    resource = None  # Unsupported hosts still return a structured refusal.
 import shutil
 import signal
 import stat
@@ -21,13 +25,28 @@ import uuid
 from runner_seccomp import program as seccomp_program
 from runner_bundle import verify as verify_bundle
 
-POLICY_VERSION = "linux-bwrap-v2"
+POLICY_VERSION = "linux-bwrap-v3"
 FORBIDDEN_ENV = ("GITHUB_ACTIONS", "GITLAB_CI", "TF_BUILD", "JENKINS_URL", "BUILDKITE", "TEAMCITY_VERSION")
 SYNC_NAMES = {"onedrive", "dropbox", "google drive", "googledrive", "icloud drive"}
 
 
 class Refused(RuntimeError):
     pass
+
+
+def core_policy():
+    # Piped core helpers run in the host namespaces and ignore RLIMIT_CORE.
+    # A worker namespace alone cannot contain this crash-data path.
+    pattern = Path('/proc/sys/kernel/core_pattern').read_text().strip()
+    if pattern.startswith(('|', '@')):
+        raise Refused('HOST_CRASH_COLLECTOR_FORBIDDEN')
+    return pattern
+
+
+def disable_core_dumps():
+    if resource is None:
+        raise Refused('ISOLATION_UNAVAILABLE')
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
 def checked_path(value, private=False):
@@ -104,7 +123,7 @@ def traced(command, directory, timeout, cancel=None):
     with (directory / "worker.log").open("wb") as log, filter_file.open("rb") as seccomp:
         command = [command[0], "--seccomp", str(seccomp.fileno()), *command[1:]]
         process = subprocess.Popen(["/usr/bin/strace", "-f", "-qq", "-s", "256", "-e", "trace=network,process", "-o", str(trace), *command],
-            stdin=subprocess.DEVNULL, stdout=log, stderr=log, env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}, start_new_session=True, close_fds=True, pass_fds=(seccomp.fileno(),))
+            stdin=subprocess.DEVNULL, stdout=log, stderr=log, env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}, start_new_session=True, close_fds=True, pass_fds=(seccomp.fileno(),), preexec_fn=disable_core_dumps)
         start = time.monotonic()
         status = None
         offset, pending = 0, ""
@@ -193,6 +212,8 @@ def _execute_inside(root, source, command, bundle=None, timeout=1800, cancel=Non
         if not Path("/usr/bin", tool).is_file():
             raise Refused("ISOLATION_UNAVAILABLE")
     root = checked_path(root, private=True)
+    crash_policy = core_policy()
+    disable_core_dumps()
     probe_result = probe(root)  # No customer path has been opened yet.
     bundle_digest = None
     if bundle is not None:
@@ -215,7 +236,7 @@ def _execute_inside(root, source, command, bundle=None, timeout=1800, cancel=Non
         raise Refused("DEPENDENCY_NOT_PREPARED")
     mounts = ["--bind", str(run / "work"), "/work",
         "--bind", str(run / "output"), "/output", "--setenv", "GRADLE_USER_HOME", "/work/gradle-home",
-        "--ro-bind", str(hosts), "/etc/hosts", "--setenv", "JAVA_TOOL_OPTIONS", "-Duser.home=/home/worker",
+        "--ro-bind", str(hosts), "/etc/hosts", "--setenv", "JAVA_TOOL_OPTIONS", "-Duser.home=/home/worker -XX:+UseSerialGC -XX:-CreateCoredumpOnCrash -XX:ErrorFile=/work/jvm-error-%p.log",
         "--setenv", "JAVA_HOME", f"/usr/lib/jvm/java-{jdk}-openjdk-amd64"]
     if bundle is not None:
         # The tool/cache bundle is read-only. Its dependencies must already be prepared.
@@ -239,6 +260,11 @@ def _execute_inside(root, source, command, bundle=None, timeout=1800, cancel=Non
                 result["status"] = "BUNDLE_CHANGED_DURING_EXECUTION"
         except (ValueError, OSError):
             result["status"] = "BUNDLE_CHANGED_DURING_EXECUTION"
+    try:
+        if core_policy() != crash_policy:
+            result["status"] = "HOST_CRASH_POLICY_CHANGED"
+    except Refused:
+        result["status"] = "HOST_CRASH_POLICY_CHANGED"
     policy = {"schemaVersion": 1, "policyVersion": POLICY_VERSION, "runId": run_id, "aiMode": "DISABLED",
         "backend": "LINUX_BUBBLEWRAP", "enforcement": "OS_NETWORK_NAMESPACE", "audit": "HOST_STRACE",
         "probe": probe_result, "inputCopy": copied, **result, "resultsPublished": result["status"] == "COMPLETED",
@@ -246,6 +272,7 @@ def _execute_inside(root, source, command, bundle=None, timeout=1800, cancel=Non
         "bundleDigest": bundle_digest,
         "inputDigest": input_digest.hexdigest() if copied["status"] == "COMPLETED" else None,
         "controllerIsolation": "SEPARATE_OS_NETWORK_NAMESPACE",
+        "coreDumpPolicy": "HARD_LIMIT_ZERO_AND_NO_HOST_HELPER",
         "scope": "TRUSTED_HOST_KERNEL_AND_PREPARED_SYSTEM_TOOLS", "syntheticCi": synthetic_ci}
     (run / "execution-policy.json").write_text(json.dumps(policy, indent=2) + "\n")
     if policy["resultsPublished"]:
@@ -266,6 +293,7 @@ def execute(root, source, command, bundle=None, timeout=1800, cancel=None, synth
         raise Refused("ISOLATION_UNAVAILABLE")
     if any(os.environ.get(name) for name in FORBIDDEN_ENV) and not synthetic_ci:
         raise Refused("EXTERNAL_CONTROLLER_FORBIDDEN")
+    core_policy()
     root = checked_path(root, private=True)
     # Metadata validation only. No project contents or worker logs are read here.
     source = checked_path(source)
@@ -278,7 +306,7 @@ def execute(root, source, command, bundle=None, timeout=1800, cancel=None, synth
         "timeout": timeout, "cancel": str(cancel) if cancel is not None else None, "synthetic_ci": synthetic_ci, "jdk": jdk,
         "host_network": os.readlink('/proc/self/ns/net')}
     process = subprocess.run(boundary(mounts) + ["/usr/bin/python3", "/runner/offline_runner.py", "--controller"],
-        input=json.dumps(request), capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"})
+        input=json.dumps(request), capture_output=True, text=True, env={"PATH": "/usr/bin:/bin"}, preexec_fn=disable_core_dumps)
     try:
         result = json.loads(process.stdout)
     except (ValueError, TypeError):

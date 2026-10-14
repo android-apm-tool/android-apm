@@ -95,7 +95,15 @@ controller도 별도의 network namespace에 들어간 후에 소스·로그를 
 
 worker의 네트워크 namespace에는 외부 인터페이스가 없다. 내부 loopback은 Gradle IPC용으로만 사용하며 host loopback relay에는 닿지 않는다. 별도 PID namespace, 최소 mount, 환경 초기화, seccomp로 ptrace/namespace 변경/CLONE_UNTRACED/io_uring 우회를 제한한다. strace는 worker 밖에서 자식을 추적한다. 외부 connect/send 시도는 차단 뒤 실행 실패로 판정하고 결과를 성공 세대로 공개하지 않는다.
 
-모든 실행은 새 probe·audit·runId를 갖는다. 정책은 `linux-bwrap-v2`, bundle과 accepted input snapshot은 SHA-256으로 식별한다. 실패·취소 자료는 private run에 격리 보관하고 `last-success.json`은 성공한 새 세대만 atomic replace한다. audit/log는 worker가 수정할 수 없고 CLI는 상태/runId만 출력한다. OneDrive·symlink·네트워크 파일시스템·알려진 hosted CI controller는 고객 실행에서 거부한다.
+모든 실행은 새 probe·audit·runId를 갖는다. 정책은 `linux-bwrap-v3`, bundle과 accepted input snapshot은 SHA-256으로 식별한다. 실패·취소 자료는 private run에 격리 보관하고 `last-success.json`은 성공한 새 세대만 atomic replace한다. audit/log는 worker가 수정할 수 없고 CLI는 상태/runId만 출력한다. OneDrive·symlink·네트워크 파일시스템·알려진 hosted CI controller는 고객 실행에서 거부한다.
+
+### 네이티브 크래시에서 발견한 추가 경계
+
+룰업 진단 재해석에서 Ubuntu OpenJDK 21의 G1 GC가 SIGSEGV로 종료됐다. 이때 WSL의 `kernel.core_pattern=|/wsl-capture-crash …`가 **worker 밖의 Windows 임시 디렉터리**에 덤프를 만들었다. 이 실행을 비전송 검증 성공으로 인정하지 않았고, 해당 JVM 시험이 생성한 덤프는 삭제했다. 대상 코드·로그·덤프를 GitHub에 올리지 않았다.
+
+Linux의 pipe core helper는 초기 host namespace에서 실행되며 `RLIMIT_CORE`만으로는 차단되지 않는다. 따라서 v3는 host pipe/socket crash collector가 설정돼 있으면 입력을 읽기 전에 `HOST_CRASH_COLLECTOR_FORBIDDEN`으로 거부한다. 일반 파일 대상인 승인 환경에서 controller·worker·자식의 core hard limit을 0으로 고정하고 JVM 자체 core 생성도 끈다. 실행 후 host 정책 변경도 검사한다. [Linux core(5)](https://man7.org/linux/man-pages/man5/core.5.html)
+
+runner는 호스트의 core 정책을 자동 변경하지 않는다. 관리자가 승인한 시험 환경을 준비해야 한다. 공개 CI는 폐기되는 runner에서 이를 명시적으로 설정한다. 로컬 WSL의 임시 변경은 별도 승인·복원 절차가 필요하다. 네트워크 namespace만 확인한 이전 실행을 v3 검증으로 재사용하지 않는다. 격리 실행 JVM은 Serial GC를 사용해 발견된 G1 경로를 피하며, JVM 장애 자체가 보안 통과를 의미하지 않는다.
 
 호스트 관리자·커널·system JDK/라이브러리는 신뢰한다. bundle은 실행 전후 해시를 검증하며 외부 host의 악의적인 동시 변경을 하드웨어 수준에서 방어한다고 주장하지 않는다. private 파일의 보존/삭제는 고객 운영 정책에 맡긴다. viewer, Android 테스트 장치, VM snapshot 폐기까지 구현된 기능은 아니다.
 
@@ -112,4 +120,6 @@ worker의 네트워크 namespace에는 외부 인터페이스가 없다. 내부 
 
 공개 CI는 저장소의 합성 자료만 실행한다. 고객 코드·카탈로그·경로·worker.log/network.trace를 업로드하는 단계는 없다. CI의 OS 설정은 폐기되는 hosted runner의 합성 시험용이며 고객 runner의 보안 정책을 자동 변경하지 않는다.
 
-샘플과 룰업의 최종 실행 수치·제한은 검증 완료 후 이 절에 기록한다. 전체 화면/경로 발견률이나 실제 기기 접근 성공률을 이 테스트 수로 대신하지 않는다.
+현재 공개 샘플의 카탈로그·UI·전환·질의 캐시 회귀와 v2의 격리 반례는 통과했다. 첫 PR CI도 통과했지만, v3 이후 재검증 결과로 대체해야 한다. 룰업은 37개 모듈의 수집 후 메모리 부족을 수정했고, 진단 재해석에서 SootUp/Heros가 3,586개 클래스·27,648개 메서드·521개 호출 사이트를 연결했다. 이후 JVM 네이티브 크래시와 host dump 경계를 발견했으므로 **룰업 전환·launcher 경로 및 최종 보안 인수는 아직 완료되지 않았다.** 이 상태에서는 머지하지 않는다.
+
+최종 실행 수치·제한은 검증 완료 후 갱신한다. 전체 화면/경로 발견률이나 실제 기기 접근 성공률을 이 테스트 수로 대신하지 않는다.
