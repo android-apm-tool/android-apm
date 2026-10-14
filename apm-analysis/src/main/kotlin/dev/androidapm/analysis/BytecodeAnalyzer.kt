@@ -119,6 +119,22 @@ object BytecodeAnalyzer {
         val indy = methods.sumOf { method -> method.body.stmts.count { stmt ->
             stmt.isInvokableStmt && stmt.asInvokableStmt().invokeExpr.orElse(null) is JDynamicInvokeExpr
         } }
+        val controlFlow = methods.map { method ->
+            val cfg = method.body.controlFlowGraph
+            val statements = cfg.stmts
+            val ids = java.util.IdentityHashMap<Stmt, Int>()
+            statements.forEachIndexed { i, stmt -> ids[stmt] = i }
+            record("method" to method.signature.toString(), "sourceFunctionRef" to bridged[method.signature]?.get("symbol"),
+                "bridge" to if (method.signature in bridged) "UNIQUE_SOURCE_MATCH" else "UNRESOLVED",
+                "entry" to ids[cfg.startingStmt], "nodes" to statements.mapIndexed { index, stmt ->
+                    record("index" to index, "operation" to stmt.javaClass.simpleName,
+                        "line" to stmt.positionInfo.stmtPosition.firstLine.takeIf { it > 0 },
+                        "successors" to cfg.successors(stmt).map { ids.getValue(it) },
+                        "exceptionalSuccessors" to cfg.exceptionalSuccessors(stmt).entries.sortedBy { it.key.toString() }.map {
+                            record("type" to it.key.toString(), "target" to ids.getValue(it.value))
+                        })
+                })
+        }
         return record(
             "analysis" to record("engine" to "SOOTUP_HEROS", "sootUpVersion" to "3.0.1", "herosVersion" to "1.2.3",
                 "contentModels" to ContentSemantics.version, "scope" to "APPLICATION_BYTECODE_WITH_LIBRARY_SUMMARIES",
@@ -128,12 +144,14 @@ object BytecodeAnalyzer {
                 "callbackInvocationFacts" to callbackHits.size, "linkedCallSites" to targets.size,
                 "unmappedCandidateSites" to unmatchedSites.size, "unbridgedBytecodeStatements" to unbridgedStatements.size,
                 "dynamicInvokeSites" to indy,
+                "controlFlowMethods" to controlFlow.size, "controlFlowSchema" to "SOOTUP_CFG_V1",
                 "limitations" to listOf("MAY_TARGETS_NOT_RUNTIME_OBSERVATIONS", "HEAP_AND_CAPTURED_FIELDS_NOT_SOLVED",
                     "REFLECTION_AND_DYNAMIC_LOADING_NOT_SOLVED", "LIBRARY_BODIES_USE_SUMMARIES",
                     "EXTERNAL_DECLARED_DISPATCH_NOT_EXPANDED", "OPAQUE_RETURNS_NOT_SOLVED", "AMBIGUOUS_SOURCE_IDENTITIES_NOT_LINKED")),
             "analysisCallTargets" to targets.toSortedMap().map { (id, symbols) ->
                 record("callId" to id, "targets" to symbols.toList(), "evidence" to evidence.getValue(id).toList(), "resolution" to "MAY")
             },
+            "bytecodeControlFlow" to controlFlow,
             "collectionDiagnostics" to diagnostics.sortedBy(Json::encode),
         )
     }
@@ -146,7 +164,13 @@ object AnalysisMain {
         val manifest = Json.decode(File(args[0]).readText(Charsets.UTF_8)).record()
         fun files(key: String) = (manifest[key] as List<*>).map { File(it as String) }
         val strings = HashMap<String, String>()
-        val modules = files("catalogs").map { Json.decode(it.readText(Charsets.UTF_8), strings).record() }
+        // The bytecode bridge needs source identities, not IR values/bodies. Release
+        // those large trees before SootUp constructs its independent method bodies.
+        val modules = files("catalogs").map { file ->
+            val module = Json.decode(file.readText(Charsets.UTF_8), strings).record()
+            record("functions" to module.records("functions").map { f -> f.filterKeys { it in setOf("symbol", "simpleName", "kind", "packageName", "source") } },
+                "callRelations" to module.records("callRelations").map { c -> c.filterKeys { it in setOf("id", "owner", "name", "target", "source") } })
+        }
         val result = BytecodeAnalyzer.analyze(modules, files("classes"), files("libraries"))
         File(args[1]).bufferedWriter(Charsets.UTF_8).use { Json.write(result, it, true) }
         println("Android APM SootUp/Heros: " + Json.encode(result["analysis"]))

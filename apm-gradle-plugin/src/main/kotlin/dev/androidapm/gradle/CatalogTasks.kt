@@ -27,6 +27,7 @@ abstract class AnalyzeCatalogTask @Inject constructor(private val exec: ExecOper
     @get:Classpath abstract val libraries: ConfigurableFileCollection
     @get:Classpath abstract val analyzerClasspath: ConfigurableFileCollection
     @get:OutputFile abstract val analysisFile: RegularFileProperty
+    @get:Input abstract val analyzerHeap: Property<String>
 
     @TaskAction fun analyze() {
         val manifest = temporaryDir.resolve("inputs.json")
@@ -39,7 +40,7 @@ abstract class AnalyzeCatalogTask @Inject constructor(private val exec: ExecOper
         exec.javaexec {
             it.classpath(analyzerClasspath)
             it.mainClass.set("dev.androidapm.analysis.AnalysisMain")
-            it.maxHeapSize = "3g"
+            it.maxHeapSize = analyzerHeap.get()
             it.systemProperty("org.slf4j.simpleLogger.defaultLogLevel", "error")
             it.args(manifest.absolutePath, result.absolutePath)
         }.assertNormalExitValue()
@@ -65,10 +66,11 @@ abstract class PublishCatalogTask : DefaultTask() {
         val catalog = if (sourceFiles.isEmpty) CatalogLinker.link(listOf(record(
             "schemaVersion" to 1, "moduleId" to moduleId.get(), "variant" to variant.get(),
             "collectionStatus" to "COMPLETE_FOR_DECLARED_INPUTS",
+            "factsCapabilities" to listOf("PARAMETER_DEFAULTS_V1", "CLASS_METADATA_V1", "ASSIGNMENTS_V1", "EXPLICIT_ARGUMENT_POSITIONS_V1", "CONTROL_FLOW_IR_V1"),
             "scope" to record("files" to emptyList<String>(), "mode" to "FULL_COMPILATION"),
         ))) else {
             check(input != null) { "APM collector did not produce a complete module catalog" }
-            Json.decode(input.readText(Charsets.UTF_8)).record()
+            Json.decode(input.readText(Charsets.UTF_8), HashMap()).record()
         }
         writeCatalog(linkingFile.get().asFile, catalog)
         writeCatalog(catalogFile.get().asFile, CatalogReport.create(catalog), pretty = true)
@@ -85,6 +87,7 @@ abstract class MergeCatalogTask : DefaultTask() {
     @get:OutputFile abstract val catalogFile: RegularFileProperty
     @get:OutputFile abstract val uiAnalysisFile: RegularFileProperty
     @get:OutputFile abstract val uiEvidenceFile: RegularFileProperty
+    @get:OutputFile abstract val linkingFile: RegularFileProperty
 
     @TaskAction fun merge() {
         val strings = HashMap<String, String>()
@@ -98,9 +101,11 @@ abstract class MergeCatalogTask : DefaultTask() {
             "collectionDiagnostics" to (module.records("collectionDiagnostics") + analysis.records("collectionDiagnostics"))) }
         val result = CatalogLinker.link(enriched).toMutableMap()
         result["analysis"] = analysis["analysis"]
+        result["bytecodeControlFlow"] = analysis["bytecodeControlFlow"]
         result["missingModules"] = missingModules.get()
         if (missingModules.get().isNotEmpty()) result["resolutionStatus"] = "PARTIAL"
         val ui = UiAnalysis.create(result)
+        writeCatalog(linkingFile.get().asFile, result)
         writeCatalog(uiEvidenceFile.get().asFile, ui.evidence, pretty = true)
         writeCatalog(uiAnalysisFile.get().asFile, ui.report, pretty = true)
         writeCatalog(catalogFile.get().asFile, CatalogReport.create(result), pretty = true)
@@ -203,6 +208,7 @@ internal fun registerCatalogTasks(project: Project, artifact: SubpluginArtifact)
             it.classes.from(collector.flatMap { task -> task.destinationDirectory })
             it.libraries.from(original.libraries)
             it.analyzerClasspath.from(analyzer)
+            it.analyzerHeap.convention(project.providers.gradleProperty("apm.analysisHeap").orElse("3g"))
             it.analysisFile.set(project.layout.buildDirectory.file("intermediates/android-apm/debug/analysis/bytecode.json"))
         }
         val merge = project.tasks.register("apmMergeDebugCatalog", MergeCatalogTask::class.java) {
@@ -214,6 +220,27 @@ internal fun registerCatalogTasks(project: Project, artifact: SubpluginArtifact)
             it.catalogFile.set(project.layout.buildDirectory.file("reports/android-apm/catalog/debug/project-catalog.json"))
             it.uiAnalysisFile.set(project.layout.buildDirectory.file("reports/android-apm/catalog/debug/ui-analysis.json"))
             it.uiEvidenceFile.set(project.layout.buildDirectory.file("intermediates/android-apm/debug/analysis/ui-evidence.json"))
+            it.linkingFile.set(project.layout.buildDirectory.file("intermediates/android-apm/debug/analysis/linked-facts.json"))
+        }
+        val linkTransitions = project.tasks.register("apmLinkDebugTransitions", LinkTransitionsTask::class.java) {
+            it.group = "android apm"
+            it.description = "Links triggers and navigation effects with explicit unresolved frontiers."
+            it.factsFile.set(merge.flatMap { task -> task.linkingFile })
+            it.transitionsFile.set(project.layout.buildDirectory.file("reports/android-apm/catalog/debug/transitions.json"))
+            it.evidenceFile.set(project.layout.buildDirectory.file("intermediates/android-apm/debug/analysis/transition-evidence.json"))
+        }
+        val entries = project.tasks.register("apmCollectDebugEntryPoints", CollectEntryPointsTask::class.java) {
+            it.group = "android apm"
+            it.factsFile.set(merge.flatMap { task -> task.linkingFile })
+            it.entryPointsFile.set(project.layout.buildDirectory.file("reports/android-apm/catalog/debug/entry-points.json"))
+        }
+        project.tasks.register("apmFindDebugAccessPaths", FindAccessPathsTask::class.java) {
+            it.group = "android apm"
+            it.description = "Explores bounded access paths; optionally set -Papm.accessQuery=<file>."
+            it.transitionsFile.set(linkTransitions.flatMap { task -> task.transitionsFile })
+            it.entryPointsFile.set(entries.flatMap { task -> task.entryPointsFile })
+            it.queryFile.set(project.layout.file(project.providers.gradleProperty("apm.accessQuery").map { path -> project.rootProject.file(path) }))
+            it.pathsFile.set(project.layout.buildDirectory.file("reports/android-apm/catalog/debug/access-paths.json"))
         }
         project.tasks.register("apmMatchDebugDesign", MatchDesignTask::class.java) {
             it.group = "android apm"
@@ -223,6 +250,13 @@ internal fun registerCatalogTasks(project: Project, artifact: SubpluginArtifact)
             it.matchesFile.set(project.layout.buildDirectory.file("reports/android-apm/catalog/debug/design-matches.json"))
         }
         project.gradle.projectsEvaluated {
+            val manifest = project.tasks.findByName("processDebugMainManifest")
+            entries.configure { task ->
+                if (manifest != null) {
+                    task.dependsOn(manifest)
+                    task.manifestFiles.from(manifest.outputs.files.asFileTree.matching { it.include("**/AndroidManifest.xml") })
+                }
+            }
             fun dependencyPaths(): List<String> {
                 val dependencies = project.configurations.findByName("debugCompileClasspath") ?: project.configurations.findByName("compileClasspath")
                 return dependencies?.incoming?.resolutionResult?.allComponents.orEmpty().mapNotNull { component ->

@@ -15,3 +15,10 @@ dependencies {
     testRuntimeOnly(libs.junit.launcher)
 }
 tasks.test { useJUnitPlatform() }
+
+// Preparation uses public tool dependencies only; customer snapshots are never inputs.
+tasks.register<Sync>("prepareOfflineRuntime") {
+    from(configurations.runtimeClasspath)
+    from(tasks.jar)
+    into(layout.buildDirectory.dir("offline-runtime"))
+}
