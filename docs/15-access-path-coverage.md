@@ -79,6 +79,8 @@ symbolic enum에는 별도의 모순 규칙을 적용한다. 같은 타입·피�
 
 이 선택은 탐색의 축소다. 뒤의 버튼이 생략된 조건에서만 활성화되면 그 경로를 놓칠 수 있다. `RENDER_CONTINUATION_BUDGET_EXCEEDED`와 `TRUNCATED`로 공개하며, `renderContinuationsPerOutcome`에 실제 설정을 기록한다. 반례는 제한 전후를 비교해 남은 경로의 조건이 원래 경로와 일치하고, 다른 반환값이 같은 할당량으로 사라지지 않으며, 새로운 목적지가 만들어지지 않음을 검사한다.
 
+UI 트리거에도 동작별 조건 변형을 최대 8개 보관한다. 키는 화면 문맥·호출 위치·트리거 종류·callback과 캡처 값·enabled 값·목록 builder 상태다. 서로 다른 목적지 인자를 캡처한 callback과 서로 다른 외부 URI 입력은 구분한다. 보관한 프레임의 조건·호출 근거·이벤트 해석은 그대로이며, 중복 표시 조건마다 같은 핸들러를 수만 번 해석하는 비용을 제한한다. 생략은 `TRIGGER_VARIANT_BUDGET_EXCEEDED`와 `TRUNCATED`, 실제 설정은 `triggerVariantsPerAction`으로 공개한다. 생략한 조건에서만 성립하는 접근 경로는 놓칠 수 있다. 실제 컴파일 반례에서 충분한 한도로 만든 결과와 비교해 보관된 전환이 원래 전환과 완전히 같고, 서로 다른 캡처 목적지가 남는지 검사한다.
+
 `TransitionMain --diagnostic-context <context-ref> <facts.json> <merged-manifest.xml> <new-output-directory>`는 누락 원인을 좁히는 부분 진단이다. 출력은 `diagnosticOnly=true`이며 경로 보고서를 만들지 않는다. `AccessPaths`도 이 스냅샷을 거부한다. 선택하지 않은 화면의 렌더링·구독 근거가 없으므로 부분 진단의 효과를 최종 발견률에 넣지 않는다. 인수에는 전체 문맥을 같은 입력 세대로 다시 분석한 결과만 사용한다.
 
 기존 단일 BFS 큐는 한 화면의 많은 조건 분기를 먼저 소비해 다른 화면의 확장을 늦췄다. 새 탐색은 현재 보이는 화면 문맥별 큐를 두고 확장 횟수가 적은 큐부터 처리한다. 같은 조건 집합의 나열 순서도 상태의 차이로 계산하지 않는다.

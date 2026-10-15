@@ -2,8 +2,8 @@ package dev.androidapm.catalog
 
 data class TransitionResult(val report: Record, val evidence: Record)
 
-data class TransitionLimits(val renderVisits: Int = 5_000_000, val eventVisits: Int = 100_000, val renderContinuationsPerOutcome: Int = 8) {
-    init { require(renderVisits > 0 && eventVisits > 0 && renderContinuationsPerOutcome > 0) { "TRANSITION_LIMITS_MUST_BE_POSITIVE" } }
+data class TransitionLimits(val renderVisits: Int = 5_000_000, val eventVisits: Int = 100_000, val renderContinuationsPerOutcome: Int = 8, val triggerVariantsPerAction: Int = 8) {
+    init { require(renderVisits > 0 && eventVisits > 0 && renderContinuationsPerOutcome > 0 && triggerVariantsPerAction > 0) { "TRANSITION_LIMITS_MUST_BE_POSITIVE" } }
 }
 
 /** Bounded source interpreter; runtime reachability and unsupported dispatch stay explicit. */
@@ -37,6 +37,7 @@ object TransitionAnalysis {
         val hostGuards = mutableMapOf<String, List<Record>>()
         val collectors = linkedMapOf<String, Record>()
         val pendingTriggers = mutableListOf<PendingTrigger>()
+        val triggerVariantCounts = mutableMapOf<String, Int>()
         var collectingEvents = false
         val reachedRenders = mutableMapOf<String, MutableSet<String>>()
         var visits = 0
@@ -136,7 +137,7 @@ object TransitionAnalysis {
                 "identity" to s["identity"], "guards" to hostGuards[h].orEmpty(), "status" to if (s["kind"] == "STACK") "STRUCTURAL" else "UNRESOLVED") }
             val report = record("schemaVersion" to 1, "rulesVersion" to version, "aiMode" to "DISABLED", "catalogFingerprint" to fingerprint(catalog),
                 "diagnosticOnly" to diagnosticContextRefs.isNotEmpty(), "diagnosticContextRefs" to diagnosticContextRefs.sorted(),
-                "limits" to record("renderVisits" to limits.renderVisits, "eventVisits" to limits.eventVisits, "renderContinuationsPerOutcome" to limits.renderContinuationsPerOutcome, "depth" to 384, "branchStates" to 256),
+                "limits" to record("renderVisits" to limits.renderVisits, "eventVisits" to limits.eventVisits, "renderContinuationsPerOutcome" to limits.renderContinuationsPerOutcome, "triggerVariantsPerAction" to limits.triggerVariantsPerAction, "depth" to 384, "branchStates" to 256),
                 "variant" to catalog["variant"], "contexts" to contexts.sortedBy { it.string("id") }, "initialStacks" to initial.sortedBy { it.string("hostRef") },
                 "triggers" to triggers.values.sortedBy { it.string("id") }, "effects" to effects.values.sortedBy { it.string("id") },
                 "streamBindings" to collectors.values.map { it.filterKeys { key -> key != "callback" } }.sortedBy { it.string("id") },
@@ -582,6 +583,18 @@ object TransitionAnalysis {
             if (callback["kind"] != "FUNCTION") { problem("TRIGGER_CALLBACK_UNRESOLVED", call.string("id"), c.string("id")); return }
             val id = "trigger:" + fingerprint(record("context" to c["id"], "call" to call["id"], "callback" to callback, "enabled" to enabled, "guards" to f.guards))
             if (id in triggers) return
+            // Bound condition variants of the same concrete action. Keep entire
+            // witnesses, including guards and traces, rather than merging them.
+            // Captured arguments and builder contents distinguish actions.
+            val action = fingerprint(record("context" to c["id"], "call" to call["id"], "kind" to kind,
+                "callback" to callback, "enabled" to enabled, "builders" to f.env.filterKeys { it.startsWith("@list:") }))
+            val variants = triggerVariantCounts[action] ?: 0
+            if (variants >= limits.triggerVariantsPerAction) {
+                truncated = true; cutoffs++
+                problem("TRIGGER_VARIANT_BUDGET_EXCEEDED", action, c.string("id"))
+                return
+            }
+            triggerVariantCounts[action] = variants + 1
             triggers[id] = record("id" to id, "originContextRef" to c["id"], "kind" to kind, "callRef" to call["id"],
                 "callbackRef" to callback["ref"], "enabled" to enabled, "guards" to f.guards, "evidenceRefs" to f.trace) + call.filterKeys { it in setOf("externalEntryRef", "externalInput") }
             val active = assume(f.copy(effects = emptyList()), enabled, true) ?: return
