@@ -12,6 +12,33 @@ import java.nio.file.Path
 import kotlin.io.path.*
 
 class CatalogCollectorTest {
+    @Test fun `Elvis returns and throws inside arguments preserve expression control flow`() {
+        for ((argument, throwing) in listOf("null" to false, "\"present\"" to false, "null" to true)) {
+            val exit = if (throwing) "throw IllegalStateException()" else "return Detail"
+            val catalog = compile("""
+                object Home
+                object Detail
+                fun choose(input: String?): Any {
+                    val value = input ?: $exit
+                    return Home
+                }
+                @Composable fun App() {
+                    val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                    androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                        entry<Home> { androidx.compose.material3.Button(onClick = { stack.add(choose($argument)) }) }
+                        entry<Detail> {}
+                    })
+                }
+            """.trimIndent())
+            assertTrue(catalog.strings("factsCapabilities").contains("EXPRESSION_CONTROL_FLOW_V1"))
+            val result = TransitionAnalysis.create(catalog).report
+            val edges = result.records("transitions")
+            if (throwing) assertTrue(edges.isEmpty(), Json.encode(result)) else {
+                val target = result.records("contexts").single { it["id"] in edges.single().strings("targetContextRefs") }
+                assertTrue(Json.encode(target["keyPatterns"]).contains(if (argument == "null") "fixture.Detail" else "fixture.Home"), Json.encode(result))
+            }
+        }
+    }
     @Test fun `public property backing fields match external module references while private fields stay local`() {
         val library = directory.resolve("Library.kt").apply { writeText("package fixture\nval Shared = Any()\nprivate val Hidden = Any()\nfun hidden() = Hidden") }
         val consumer = directory.resolve("Consumer.kt").apply { writeText("package fixture\nfun use() = Shared") }

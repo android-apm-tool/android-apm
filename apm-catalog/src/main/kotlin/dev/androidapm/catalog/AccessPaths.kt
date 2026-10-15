@@ -6,6 +6,9 @@ object AccessPaths {
         require(transitions["schemaVersion"] == entries["schemaVersion"]) { "INCOMPATIBLE_ACCESS_INPUTS" }
         require(transitions["catalogFingerprint"] == entries["catalogFingerprint"]) { "ACCESS_INPUT_PROVENANCE_MISMATCH" }
         val contexts = transitions.records("contexts")
+        val edges = transitions.records("transitions")
+        val outgoing = edges.withIndex().flatMap { (index, edge) -> edge.strings("originContextRefs").map { it to index } }
+            .groupBy({ it.first }, { it.second })
         val effects = transitions.records("effects").associateBy { it.string("id") }
         val maxDepth = limit(query, "maxDepth", 20, 100)
         val maxStates = limit(query, "maxStates", 10_000, 100_000)
@@ -53,7 +56,7 @@ object AccessPaths {
                         "observation" to "NOT_OBSERVED", "stateVersion" to state.version)
                 }
             }
-            val next = transitions.records("transitions").filter { edge -> edge.strings("originContextRefs").any { id -> visible.any { it["id"] == id } } }
+            val next = visible.flatMap { outgoing[it.string("id")].orEmpty() }.distinct().sorted().map { edges[it] }
             if (state.steps.size >= maxDepth) { if (next.isNotEmpty()) { truncated = true; unresolved("DEPTH_BUDGET_EXCEEDED", key) }; continue }
             for (edge in next) {
                 if (edge["linkage"] == "UNRESOLVED") { unresolved("UNRESOLVED_TRANSITION", edge.string("id")); continue }
@@ -100,8 +103,20 @@ object AccessPaths {
     private data class State(val entry: String, val host: String, val stack: List<Record>, val unknownPrefix: Boolean,
         val guards: List<Record> = emptyList(), val steps: List<String> = emptyList(), val version: Int = 0)
     private fun limit(query: Record, key: String, default: Int, maximum: Int): Int = ((query[key] as? Number)?.toInt() ?: default).also { require(it in 1..maximum) { "INVALID_ACCESS_LIMIT:$key" } }
-    internal fun contradictory(guards: List<Record>): Boolean = guards.any { guard ->
+    internal fun contradictory(guards: List<Record>): Boolean {
+        val normalized = guards.map { guard ->
+            var test = guard["test"].record()
+            var expected = guard["expected"]
+            var depth = 0
+            while (test["kind"] == "PREDICATE" && test["operation"] == "kotlin.Boolean.not" && test.records("arguments").size == 1 && depth++ < 64) {
+                test = test.records("arguments").single()
+                expected = expected != true
+            }
+            guard + record("test" to test, "expected" to expected)
+        }
+        return normalized.any { guard ->
         val test = guard["test"].record()
         test["kind"] == "CONSTANT" && test["value"] is Boolean && test["value"] != guard["expected"]
-    } || guards.groupBy { fingerprint(record("test" to it["test"], "version" to it["version"])) }.values.any { group -> group.map { it["expected"] }.distinct().size > 1 }
+    } || normalized.groupBy { fingerprint(record("test" to it["test"], "version" to it["version"])) }.values.any { group -> group.map { it["expected"] }.distinct().size > 1 }
+    }
 }

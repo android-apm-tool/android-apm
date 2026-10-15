@@ -6,7 +6,7 @@ data class TransitionResult(val report: Record, val evidence: Record)
 object TransitionAnalysis {
     const val version = "transitions-v1"
     fun create(catalog: Record, onContext: (Int, Int) -> Unit = { _, _ -> }): TransitionResult {
-        require(catalog.strings("factsCapabilities").containsAll(setOf("CONTROL_FLOW_IR_V1", "PARAMETER_DEFAULTS_V1", "ASSIGNMENTS_V1"))) { "TRANSITION_FACTS_RECOLLECTION_REQUIRED" }
+        require(catalog.strings("factsCapabilities").containsAll(setOf("CONTROL_FLOW_IR_V1", "PARAMETER_DEFAULTS_V1", "ASSIGNMENTS_V1", "EXPRESSION_CONTROL_FLOW_V1"))) { "TRANSITION_FACTS_RECOLLECTION_REQUIRED" }
         return Analyzer(catalog, onContext).run()
     }
     private data class Frame(val env: Map<String, Record> = emptyMap(), val guards: List<Record> = emptyList(),
@@ -152,7 +152,7 @@ object TransitionAnalysis {
                 "BLOCK" -> stmt.records("statements").fold(listOf(f)) { states, child ->
                     bounded(states.flatMap { state ->
                         if (state.stop.isNotEmpty()) listOf(state) else {
-                            fun clean(env: Map<String, Record>) = env.filterKeys { !it.startsWith("@evaluated:") && !it.startsWith("@choice:") }
+                            fun clean(env: Map<String, Record>) = env.filterKeys { !it.startsWith("@evaluated:") && !it.startsWith("@choice:") && !it.startsWith("@expression:") }
                             val before = cutoffs
                             val input = state.copy(env = clean(state.env))
                             val paths = walk(child, input, c, event, seen, depth + 1).map { path ->
@@ -167,10 +167,10 @@ object TransitionAnalysis {
                     })
                 }
                 "DECLARE", "WRITE" -> expression(stmt["value"].record(), f, c, event, seen, depth + 1).map {
-                    it.copy(env = it.env + (stmt.string("ref") to flow.eval(stmt["value"].record(), it.env)))
+                    if (it.stop.isNotEmpty()) it else it.copy(env = it.env + (stmt.string("ref") to flow.eval(stmt["value"].record(), it.env)))
                 }
                 "RETURN", "CALL", "EVALUATE" -> expression(stmt["value"].record(), f, c, event, seen, depth + 1).map {
-                    if (stmt["op"] == "RETURN") it.copy(stop = if (stmt.string("target").isEmpty()) "RETURN" else "RETURN:" + stmt.string("target"), value = flow.eval(stmt["value"].record(), it.env)) else it
+                    if (it.stop.isEmpty() && stmt["op"] == "RETURN") it.copy(stop = if (stmt.string("target").isEmpty()) "RETURN" else "RETURN:" + stmt.string("target"), value = flow.eval(stmt["value"].record(), it.env)) else it
                 }
                 "BRANCH" -> {
                     val before = cutoffs
@@ -205,12 +205,25 @@ object TransitionAnalysis {
             return if (AccessPaths.contradictory(guards)) null else f.copy(guards = guards)
         }
         fun expression(expr: Record, f: Frame, c: Record, event: String?, seen: Set<Invocation>, depth: Int): List<Frame> {
+            if (f.stop.isNotEmpty()) return listOf(f)
+            if (expr["kind"] in setOf("RETURN_EXPRESSION", "THROW_EXPRESSION")) {
+                return expression(expr["value"].record(), f, c, event, seen, depth + 1).map {
+                    if (it.stop.isNotEmpty()) it else it.copy(stop = if (expr["kind"] == "THROW_EXPRESSION") "THROW" else "RETURN:" + expr.string("target"),
+                        value = flow.eval(expr["value"].record(), it.env))
+                }
+            }
+            if (expr["kind"] == "BLOCK_EXPRESSION") {
+                val prefix = walk(record("op" to "BLOCK", "statements" to expr.records("statements")), f, c, event, seen, depth + 1)
+                return bounded(prefix.flatMap { expression(expr["value"].record(), it, c, event, seen, depth + 1) }.map {
+                    if (it.stop.isNotEmpty()) it else it.copy(env = it.env + ("@expression:" + expr.string("expressionId") to flow.eval(expr["value"].record(), it.env)))
+                })
+            }
             if (expr["kind"] == "CHOICE" && expr.string("choiceGroupId").isNotEmpty()) {
                 return bounded(expr.records("alternatives").flatMap { alternative ->
                     var branch: Frame? = assume(f, flow.eval(alternative["test"].record(), f.env), true)
                     alternative.records("excluded").forEach { excluded -> branch = branch?.let { assume(it, flow.eval(excluded, it.env), false) } }
                     branch?.let { frame -> expression(alternative["value"].record(), frame, c, event, seen, depth + 1).map {
-                        it.copy(env = it.env + ("@choice:" + expr.string("choiceGroupId") to flow.eval(alternative["value"].record(), it.env)))
+                        if (it.stop.isNotEmpty()) it else it.copy(env = it.env + ("@choice:" + expr.string("choiceGroupId") to flow.eval(alternative["value"].record(), it.env)))
                     } }.orEmpty()
                 })
             }
@@ -223,7 +236,7 @@ object TransitionAnalysis {
             val states = call.records("arguments").fold(listOf(f)) { states, arg ->
                 bounded(states.flatMap { expression(arg["value"].record(), it, c, event, seen, depth + 1) })
             }
-            return bounded(states.flatMap { dispatch(call, it, c, event, seen, depth + 1) })
+            return bounded(states.flatMap { if (it.stop.isNotEmpty()) listOf(it) else dispatch(call, it, c, event, seen, depth + 1) })
         }
         fun dispatch(call: Record, f: Frame, c: Record, event: String?, seen: Set<Invocation>, depth: Int): List<Frame> {
             val name = call.string("name")

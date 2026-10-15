@@ -157,7 +157,7 @@ internal class CatalogCollector(
         }
         val catalog = record(
             "schemaVersion" to 1, "moduleId" to module, "variant" to variant,
-            "factsCapabilities" to listOf("PARAMETER_DEFAULTS_V1", "CLASS_METADATA_V1", "ASSIGNMENTS_V1", "EXPLICIT_ARGUMENT_POSITIONS_V1", "CONTROL_FLOW_IR_V1"),
+            "factsCapabilities" to listOf("PARAMETER_DEFAULTS_V1", "CLASS_METADATA_V1", "ASSIGNMENTS_V1", "EXPLICIT_ARGUMENT_POSITIONS_V1", "CONTROL_FLOW_IR_V1", "EXPRESSION_CONTROL_FLOW_V1"),
             "collectionStatus" to "COMPLETE_FOR_DECLARED_INPUTS",
             "scope" to record("files" to files, "mode" to "FULL_COMPILATION", "adapter" to "nav3-runtime-1.0.1-1.1.2-v1"),
             "functions" to functions.values.sortedBy { it.string("symbol") },
@@ -257,7 +257,13 @@ internal class CatalogCollector(
                 "choiceGroupId" to id("choice", value), "alternatives" to value.branches.mapIndexed { index, branch -> record(
                     "value" to next(branch.result), "test" to next(branch.condition), "excluded" to value.branches.take(index).map { next(it.condition) }) })
             is IrStringConcatenation -> record("kind" to "STRING_CONCAT", "values" to value.arguments.map(::next))
-            is IrContainerExpression -> (value.statements.lastOrNull() as? IrExpression)?.let(::next) ?: record("kind" to "UNKNOWN")
+            is IrReturn -> record("kind" to "RETURN_EXPRESSION", "target" to symbol(value.returnTargetSymbol.owner as IrFunction), "value" to next(value.value))
+            is IrThrow -> record("kind" to "THROW_EXPRESSION", "value" to next(value.value))
+            is IrContainerExpression -> {
+                val result = (value.statements.lastOrNull() as? IrExpression)?.let(::next) ?: record("kind" to "UNKNOWN")
+                if (value.statements.size <= 1) result else record("kind" to "BLOCK_EXPRESSION", "expressionId" to id("expression-block", value),
+                    "statements" to value.statements.dropLast(1).map { flowStatement(it, depth + 1) }, "value" to result)
+            }
             is IrVararg -> record("kind" to "LIST", "values" to value.elements.map { element -> when (element) {
                 is IrSpreadElement -> record("kind" to "SPREAD", "value" to next(element.expression))
                 is IrExpression -> next(element)

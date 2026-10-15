@@ -142,6 +142,10 @@ v3의 공개 CI에서 build와 offline-boundary가 통과했다. 로컬 WSL에�
 
 이벤트 타입의 동등성은 사용자 정의 `equals`를 존중한다. 서로 다른 구체 타입이고 소스 계층 전체에 사용자 정의 비교가 없다는 근거가 있을 때만 기본·Kotlin 생성 동등성이 false임을 사용한다. 라이브러리 부모나 사용자 정의·상속 비교가 있으면 predicate로 남긴다. 같은 트리거 문맥·콜백·enabled 값·guard 조합은 이미 구한 근거를 재사용하며 enabled 값이 다른 사례는 합치지 않는다.
 
+표현식 안의 제어 흐름도 수집한다. `val route = pending ?: return Empty`를 마지막 값만 남기는 방식으로 평탄화하면 조기 반환 분기가 사라지고 이후 목적지를 잘못 선택한다. `BLOCK_EXPRESSION`은 임시 변수와 평가 순서를, `RETURN_EXPRESSION`/`THROW_EXPRESSION`은 종료 대상과 값을 보존한다. 종료된 인자 뒤의 호출·할당은 실행하지 않는다. 새 capability `EXPRESSION_CONTROL_FLOW_V1`이 없는 스냅샷은 재수집을 요구한다. 실제 Kotlin 컴파일러에서 null/nonnull Elvis 반환과 throw 반례를 검증한다. 예외 catch/finally 전체 모델링을 완료했다는 뜻은 아니다.
+
+경로 탐색은 출발 문맥별 전환 인덱스를 만들고 기존 순서를 유지한다. 매 상태마다 전체 전환 목록을 다시 순회하지 않는다. 같은 상태 버전에서 `p`와 `!p`가 동시에 참인 경로는 제거하며, 상태 쓰기로 버전이 달라진 조건은 별개로 유지한다. 탐색 한도와 미발견·도달 불가의 구분은 유지한다.
+
 최종 인수는 수정한 수집기로 만든 새 복사본의 룰업 전환·병합 Manifest 기반 launcher 경로로 판정한다. Home→Detail 전환의 채널 전달 근거, 그 전환을 포함하는 launcher 경로, 동일 실행의 v3 격리 정책 성공·외부 통신 시도 0건을 함께 확인해야 한다. 공개 샘플의 launcher→Home→Detail도 별도로 검증한다. 인수 완료와 최신 CI 통과 전에는 머지하지 않는다. 진단용 raw Manifest, 임시 호환 매핑, 이전 실패 실행을 최종 검증 근거로 승격하지 않는다.
 
 이 구현의 실행별 수치·인수 판정·남은 제한은 [PR #7의 검증 기록](https://github.com/android-apm-tool/android-apm/pull/7)에 기록한다. 원본 소스·카탈로그·감사 로그는 로컬 private 저장소에 남기고 공개 PR에는 집계만 기록한다. 전체 화면/경로 발견률이나 실제 기기 접근 성공률을 이 테스트 수로 대신하지 않는다.

@@ -125,7 +125,7 @@ class TransitionAnalysisTest {
         val stack = record("kind" to "STACK", "identity" to "stack", "initial" to listOf(constant("home")))
         val ordinary = record("kind" to "LIST_VALUE", "identity" to "ordinary", "items" to emptyList<Record>())
         val receiver = argument("this", if (list) ordinary else stack, "DispatchReceiver")
-        return record("schemaVersion" to 1, "factsCapabilities" to listOf("CONTROL_FLOW_IR_V1", "PARAMETER_DEFAULTS_V1", "ASSIGNMENTS_V1"),
+        return record("schemaVersion" to 1, "factsCapabilities" to listOf("CONTROL_FLOW_IR_V1", "PARAMETER_DEFAULTS_V1", "ASSIGNMENTS_V1", "EXPRESSION_CONTROL_FLOW_V1"),
             "functions" to listOf("Home", "Detail", "Action").map { record("symbol" to it, "parameters" to emptyList<Record>()) },
             "functionBodies" to listOf(body("Home", listOf(statement("button"))), body("Detail", emptyList()), body("Action", action)),
             "callRelations" to listOf(
@@ -197,6 +197,14 @@ class TransitionAnalysisTest {
         assertThrows(IllegalArgumentException::class.java) { TransitionAnalysis.create(emptyMap()) }
         val r = TransitionAnalysis.create(fixture()).report
         assertThrows(IllegalArgumentException::class.java) { AccessPaths.find(r, entries(r) + record("catalogFingerprint" to "other")) }
+    }
+    @Test fun `negated predicates conflict within one state version but not across writes`() {
+        val test = reference("ready")
+        val positive = record("test" to test, "expected" to true, "version" to 0)
+        val negative = record("test" to record("kind" to "PREDICATE", "operation" to "kotlin.Boolean.not", "arguments" to listOf(test)), "expected" to true, "version" to 0)
+        assertTrue(AccessPaths.contradictory(listOf(positive, negative)))
+        assertFalse(AccessPaths.contradictory(listOf(positive, negative + record("version" to 1))))
+        assertFalse(AccessPaths.contradictory(listOf(positive, negative + record("expected" to false))))
     }
     @Test fun `state versions do not make pre-login and post-login guards contradictory`() {
         val guard = record("test" to reference("loggedIn"), "expected" to false, "version" to 0)

@@ -156,6 +156,15 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                     if (known != null) constant(known != (expr["negated"] == true)) else record("kind" to "PREDICATE", "operation" to "TYPE_TEST", "value" to value, "testedType" to tested, "negated" to expr["negated"])
                 } else record("kind" to "PREDICATE", "operation" to "TYPE_TEST", "value" to value, "testedType" to expr["testedType"], "negated" to expr["negated"])
             }
+            "BLOCK_EXPRESSION" -> {
+                env["@expression:" + expr.string("expressionId")]?.let { return it }
+                val bound = env.toMutableMap()
+                for (stmt in expr.records("statements")) {
+                    if (stmt["op"] !in setOf("DECLARE", "WRITE")) return unknown("EXPRESSION_CONTROL_REQUIRES_INTERPRETER", expr.string("expressionId"))
+                    bound[stmt.string("ref")] = eval(stmt["value"].record(), bound, depth + 1, seen)
+                }
+                eval(expr["value"].record(), bound, depth + 1, seen)
+            }
             "CHOICE" -> {
                 env["@choice:" + expr.string("choiceGroupId")]?.let { return it }
                 val alternatives = expr.records("alternatives")
