@@ -20,7 +20,7 @@ object TransitionReports {
             val reference = predicates.getOrPut(test) {
                 val id = "condition:" + fingerprint(test)
                 definitions.putIfAbsent(id, record("id" to id, "kind" to "PREDICATE_DEFINITION", "expression" to test))
-                record("kind" to "PREDICATE_REF", "ref" to id)
+                record("kind" to "PREDICATE_REF", "ref" to id) + (AccessPaths.enumConstraint(test)?.let { record("enumConstraint" to it) } ?: emptyMap())
             }
             return guard + record("test" to reference, "expected" to expected)
         }

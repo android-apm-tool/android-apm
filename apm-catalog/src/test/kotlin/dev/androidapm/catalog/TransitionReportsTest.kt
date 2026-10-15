@@ -4,6 +4,22 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class TransitionReportsTest {
+    @Test fun `enum domain exclusions survive compaction without conflating types operands or versions`() {
+        fun guard(entry: String, type: String = "fixture.Mode", operand: String = "mode", reversed: Boolean = false) : Record {
+            val args = listOf(record("kind" to "SYMBOLIC", "ref" to operand, "type" to type), record("kind" to "ENUM", "ref" to "fixture.Mode.$entry"))
+            return record("test" to record("kind" to "PREDICATE", "operation" to "kotlin.internal.ir.EQEQ", "arguments" to if (reversed) args.reversed() else args), "expected" to true)
+        }
+        fun compact(guards: List<Record>): List<Record> = TransitionReports.compact(TransitionResult(record("transitions" to listOf(record("guards" to guards))), record("evidence" to emptyList<Record>())))
+            .report.records("transitions").single().records("guards")
+        val conflict = listOf(guard("OPEN"), guard("CLOSED", reversed = true))
+        assertTrue(AccessPaths.contradictory(conflict))
+        assertTrue(AccessPaths.contradictory(compact(conflict)))
+        assertFalse(AccessPaths.contradictory(compact(conflict.mapIndexed { index, g -> g + record("version" to index) })))
+        assertFalse(AccessPaths.contradictory(compact(listOf(guard("OPEN"), guard("CLOSED", operand = "different")))))
+        assertFalse(AccessPaths.contradictory(compact(listOf(guard("OPEN", type = "kotlin.Any"), guard("CLOSED", type = "kotlin.Any")))))
+        assertTrue(AccessPaths.contradictory(compact(listOf(guard("OPEN"), guard("OPEN", reversed = true) + record("expected" to false)))))
+        assertFalse(AccessPaths.contradictory(compact(listOf(guard("OPEN"), guard("CLOSED") + record("expected" to false)))))
+    }
     private fun constant(value: Any?) = record("kind" to "CONSTANT", "value" to value)
     private fun predicate() = record("kind" to "PREDICATE", "operation" to "input", "description" to "반복되는 조건".repeat(1000))
     @Test fun `shared conditions keep contradictions state versions and reachable targets unchanged`() {

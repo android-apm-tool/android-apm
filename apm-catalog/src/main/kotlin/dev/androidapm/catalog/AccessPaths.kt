@@ -135,11 +135,28 @@ object AccessPaths {
     private fun limit(query: Record, key: String, default: Int, maximum: Int): Int = ((query[key] as? Number)?.toInt() ?: default).also { require(it in 1..maximum) { "INVALID_ACCESS_LIMIT:$key" } }
     internal fun contradictory(guards: List<Record>): Boolean = GuardChecks().contradictory(guards)
 
+    /** Only an operand statically typed as this enum uses Enum's final equality.
+     * Any/custom-equals operands are deliberately outside this domain rule. */
+    internal fun enumConstraint(test: Record): Record? {
+        if (test["kind"] == "PREDICATE_REF") return test["enumConstraint"].record().takeIf { it.isNotEmpty() }
+        if (test["kind"] != "PREDICATE" || test["operation"] !in setOf("kotlin.internal.ir.EQEQ", "kotlin.internal.ir.EQEQEQ")) return null
+        val args = test.records("arguments")
+        if (args.size != 2) return null
+        val entry = args.singleOrNull { it["kind"] == "ENUM" && it.string("ref").contains('.') } ?: return null
+        val operand = args.single { it !== entry }
+        val type = entry.string("ref").substringBeforeLast('.')
+        if (operand["kind"] !in setOf("SYMBOLIC", "OPAQUE", "REFERENCE") || operand.string("type").removeSuffix("?") != type) return null
+        return record("operandRef" to fingerprint(operand), "enumType" to type, "entryRef" to entry["ref"])
+    }
+
     /** Report predicates are immutable. Cache only within one query, never across inputs. */
     internal class GuardChecks {
         private val keys = java.util.IdentityHashMap<Record, String>()
+        private val enumConstraints = java.util.IdentityHashMap<Record, Record?>()
         fun contradictory(guards: List<Record>): Boolean {
             val expectedByKey = HashMap<Pair<String, String>, Any?>()
+            val equal = HashMap<Triple<String, String, String>, String>()
+            val unequal = HashMap<Triple<String, String, String>, MutableSet<String>>()
             for (guard in guards) {
                 var test = guard["test"].record()
                 var expected = guard["expected"]
@@ -149,6 +166,21 @@ object AccessPaths {
                     expected = expected != true
                 }
                 if (test["kind"] == "CONSTANT" && test["value"] is Boolean && test["value"] != expected) return true
+                val constraint = if (enumConstraints.containsKey(test)) enumConstraints[test] else enumConstraint(test).also {
+                    if (enumConstraints.size >= 20_000) enumConstraints.clear()
+                    enumConstraints[test] = it
+                }
+                if (constraint != null) {
+                    val domain = Triple(constraint.string("operandRef"), constraint.string("enumType"), Json.encode(guard["version"]))
+                    val entry = constraint.string("entryRef")
+                    if (expected == true) {
+                        if (equal[domain]?.let { it != entry } == true || entry in unequal[domain].orEmpty()) return true
+                        equal[domain] = entry
+                    } else {
+                        if (equal[domain] == entry) return true
+                        unequal.getOrPut(domain) { mutableSetOf() }.add(entry)
+                    }
+                }
                 val digest = keys[test] ?: fingerprint(test).also {
                     if (keys.size >= 20_000) keys.clear()
                     keys[test] = it

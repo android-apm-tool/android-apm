@@ -49,6 +49,8 @@ scope 함수는 callback을 실행하는 것과 반환값을 전달하는 것을
 
 확정된 enum 엔트리는 선언 심벌이 같을 때만 같다. `Enum.equals`는 재정의할 수 없으므로 이 경우의 분기를 미확정으로 늘릴 필요가 없다. 이를 놓치면 스타일이나 화면 모드의 `when`에서 실행 불가능한 분기를 반복해 렌더링 예산을 소진한다. 이름이 같은 다른 enum의 엔트리, 다른 모드에만 등록된 callback은 연결하지 않는 실제 컴파일 반례를 유지한다. symbolic enum 값이나 사용자 클래스의 equals에 이 상수 규칙을 확장하지 않는다.
 
+symbolic enum에는 별도의 모순 규칙을 적용한다. 같은 타입·피연산자·상태 버전이 서로 다른 enum 엔트리와 동시에 같을 수 없다. 비교 대상의 정적 타입이 해당 enum인 경우만 제한하며 Any나 사용자 equals는 추정하지 않는다. 이 배제 관계를 공유 predicate의 `enumConstraint`에도 보관해 보고서 압축 뒤 경로 탐색에서 유지한다. 독립 검증기는 원래 조건식으로부터 제약을 다시 계산해 일치 여부를 검사한다. 다른 변수와 다른 상태 버전은 독립으로 취급한다.
+
 ### 입증된 외부 링크 경로
 
 외부 링크를 등록 화면에 직접 연결하지 않는다. 실제 merged Manifest의 VIEW·DEFAULT·BROWSABLE filter에서 구체적인 URI 입력을 만들고, 해당 Activity의 Android lifecycle override인 `onNewIntent` 본문에 Intent 값을 전달한다. URI 파서와 조건 분기를 해석한 결과가 기존 Channel·host 소유권 검사와 순서 있는 stack 효과까지 이어져야 전환이 된다. Manifest 수신 선언이나 파서 반환값만으로는 경로가 생기지 않는다.

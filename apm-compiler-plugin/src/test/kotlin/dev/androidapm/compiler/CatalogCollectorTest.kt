@@ -12,6 +12,32 @@ import java.nio.file.Path
 import kotlin.io.path.*
 
 class CatalogCollectorTest {
+    @Test fun `repeated symbolic enum tests preserve compatible callbacks and reject conflicting branches`() {
+        val catalog = compile("""
+            object Home
+            object Detail
+            object Never
+            enum class Mode { OPEN, CLOSED }
+            @Composable fun Content(mode: Mode, click: () -> Unit, wrong: () -> Unit) {
+                if (mode == Mode.OPEN) {
+                    if (mode == Mode.CLOSED) androidx.compose.material3.Button(onClick = wrong)
+                    else androidx.compose.material3.Button(onClick = click)
+                }
+            }
+            @Composable fun App(mode: Mode) {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> { Content(mode, { stack.add(Detail) }, { stack.add(Never) }) }
+                    entry<Detail> {}
+                    entry<Never> {}
+                })
+            }
+        """.trimIndent())
+        val result = TransitionAnalysis.create(catalog).report
+        val effects = result.records("effects").associateBy { it["id"] }
+        assertEquals(setOf("fixture.Detail"), result.records("transitions").flatMap { it.strings("effectRefs") }.map { effects.getValue(it)["payload"].record().string("type") }.toSet(), Json.encode(result))
+        assertTrue(result.records("transitions").all { it.records("guards").isNotEmpty() })
+    }
     @Test fun `concrete enum branches cannot register a different mode callback`() {
         val catalog = compile("""
             object Home
