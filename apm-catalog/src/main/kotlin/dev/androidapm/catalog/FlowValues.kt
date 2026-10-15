@@ -9,6 +9,15 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
     val returns = catalog.records("values").filter { "returnOf" in it }.groupBy { it.string("returnOf") }
     val bodies = catalog.records("functionBodies").associate { it.string("owner") to it["body"].record() }
     val classes = catalog.records("classes").associateBy { it.string("symbol") }
+    // Exact field symbols, with ambiguous ownership retained as unresolved.
+    // Index once instead of scanning every source class for each symbolic read.
+    private val fieldOwners = buildMap<String, Record?> {
+        classes.values.forEach { klass ->
+            klass.records("fields").mapNotNull { it["ref"] as? String }.distinct().forEach { ref ->
+                put(ref, if (containsKey(ref)) null else klass)
+            }
+        }
+    }
     private val classFunctions = functions.values.groupBy { it.string("classOwner") }
     private val classCaptures = mutableMapOf<String, Set<String>>()
     private val implementations = mutableMapOf<Pair<String, String>, Record?>()
@@ -370,7 +379,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
         return eval(candidates.single()["value"].record(), env, depth + 1)
     }
     private fun injectedField(ref: String, env: Map<String, Record>): Record? {
-        val klass = classes.values.singleOrNull { c -> c.records("fields").any { it["ref"] == ref } } ?: return null
+        val klass = fieldOwners[ref] ?: return null
         if (klass.records("annotations").none { it["name"] == "dagger.hilt.android.AndroidEntryPoint" }) return null
         val field = klass.records("fields").single { it["ref"] == ref }
         if (field.records("annotations").none { it["name"] == "javax.inject.Inject" }) return null

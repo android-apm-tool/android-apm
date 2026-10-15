@@ -4,6 +4,18 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class TransitionAnalysisTest {
+    @Test fun `injected field lookup requires unique declaring class and exact annotations`() {
+        val field = record("ref" to "Activity.helper", "type" to "Helper", "annotations" to listOf(record("name" to "javax.inject.Inject")))
+        val activity = record("symbol" to "Activity", "annotations" to listOf(record("name" to "dagger.hilt.android.AndroidEntryPoint")), "fields" to listOf(field))
+        val helper = record("symbol" to "Helper", "annotations" to listOf(record("name" to "javax.inject.Singleton")))
+        val constructor = record("symbol" to "Helper.init", "classOwner" to "Helper", "constructor" to true, "annotations" to listOf("javax.inject.Inject"))
+        fun evaluate(owners: List<Record>, ref: String = "Activity.helper") = FlowValues(record("classes" to owners + helper, "functions" to listOf(constructor))).eval(reference(ref))
+        assertEquals("di:SingletonComponent:Helper", evaluate(listOf(activity))["identity"])
+        assertEquals("SYMBOLIC", evaluate(listOf(activity), "Other.helper")["kind"])
+        assertEquals("SYMBOLIC", evaluate(listOf(activity, activity + record("symbol" to "Other")))["kind"])
+        assertEquals("SYMBOLIC", evaluate(listOf(activity + record("annotations" to emptyList<Record>())))["kind"])
+        assertEquals("SYMBOLIC", evaluate(listOf(activity + record("fields" to listOf(field + record("annotations" to emptyList<Record>())))))["kind"])
+    }
     @Test fun `filtered diagnostics cannot be passed off as complete access evidence`() {
         val facts = fixture()
         val full = TransitionAnalysis.create(facts).report
