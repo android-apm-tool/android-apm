@@ -16,6 +16,8 @@ Kotlin IR의 fake override에는 실행 본문이 없다. 수집기는 해당 �
 
 호출 해석기는 입증된 receiver의 소스 클래스 계층과 정확한 override 심벌을 사용한다. 적용 가능한 가장 가까운 구현이 유일한 경우에만 호출한다. 다른 하위 클래스나 미입증 receiver의 구현을 가져오지 않는다. 일반 소스의 operator invoke도 함수형 callback과 구분한다.
 
+명시적 `super` 호출은 IR의 superQualifier 근거를 수집하여 지정된 부모 구현으로 연결한다. 이를 일반 virtual 호출처럼 해석하면 부모가 반환할 목적지를 자식의 다른 목적지로 바꾸는 오연결이 생긴다. 실제 컴파일 반례에서 부모 호출과 일반 동적 호출의 목적지가 서로 다르게 유지되는지 검사한다. 이 구분이 없는 예전 snapshot은 `SUPER_CALL_TARGETS_V1` 재수집을 요구하며, 누락된 근거를 추정으로 채우지 않는다.
+
 ### UI와 비동기 전달
 
 - Material Button 계열의 정확한 API 심벌에 클릭 슬롯을 추가했다. 동명의 사용자 함수는 자동으로 트리거가 되지 않으며 enabled=false는 이동을 만들지 않는다.

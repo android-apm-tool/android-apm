@@ -6,7 +6,7 @@ data class TransitionResult(val report: Record, val evidence: Record)
 object TransitionAnalysis {
     const val version = "transitions-v1"
     fun create(catalog: Record, onEvents: (String, Int, Int) -> Unit = { _, _, _ -> }, onContext: (Int, Int) -> Unit = { _, _ -> }): TransitionResult {
-        require(catalog.strings("factsCapabilities").containsAll(setOf("CONTROL_FLOW_IR_V1", "PARAMETER_DEFAULTS_V1", "ASSIGNMENTS_V1", "EXPRESSION_CONTROL_FLOW_V1"))) { "TRANSITION_FACTS_RECOLLECTION_REQUIRED" }
+        require(catalog.strings("factsCapabilities").containsAll(setOf("CONTROL_FLOW_IR_V1", "PARAMETER_DEFAULTS_V1", "ASSIGNMENTS_V1", "EXPRESSION_CONTROL_FLOW_V1", "SUPER_CALL_TARGETS_V1"))) { "TRANSITION_FACTS_RECOLLECTION_REQUIRED" }
         return Analyzer(catalog, onContext, onEvents).run()
     }
     private data class Frame(val env: Map<String, Record> = emptyMap(), val guards: List<Record> = emptyList(),
@@ -419,7 +419,7 @@ object TransitionAnalysis {
                     "kotlinx.coroutines.channels.Channel", "kotlinx.coroutines.flow.receiveAsFlow", "androidx.activity.compose.rememberLauncherForActivityResult")) return listOf(next)
             if (call.string("target") in flow.functions && call["constructor"] != true) {
                 var target = flow.functions.getValue(call.string("target"))
-                if (target["overridable"] == true) {
+                if (target["overridable"] == true && call["superQualified"] != true) {
                     val implementation = flow.implementation(target, instance)
                     if (implementation != null) target = implementation
                     else { problem("VIRTUAL_DISPATCH_REQUIRES_OBJECT_PROOF", call.string("id"), c.string("id")); return listOf(next.copy(uncertain = true)) }

@@ -260,7 +260,7 @@ class TransitionAnalysisTest {
         val stack = record("kind" to "STACK", "identity" to "stack", "initial" to listOf(constant("home")))
         val ordinary = record("kind" to "LIST_VALUE", "identity" to "ordinary", "items" to emptyList<Record>())
         val receiver = argument("this", if (list) ordinary else stack, "DispatchReceiver")
-        return record("schemaVersion" to 1, "factsCapabilities" to listOf("CONTROL_FLOW_IR_V1", "PARAMETER_DEFAULTS_V1", "ASSIGNMENTS_V1", "EXPRESSION_CONTROL_FLOW_V1"),
+        return record("schemaVersion" to 1, "factsCapabilities" to listOf("CONTROL_FLOW_IR_V1", "PARAMETER_DEFAULTS_V1", "ASSIGNMENTS_V1", "EXPRESSION_CONTROL_FLOW_V1", "SUPER_CALL_TARGETS_V1"),
             "functions" to listOf("Home", "Detail", "Action").map { record("symbol" to it, "parameters" to emptyList<Record>()) },
             "functionBodies" to listOf(body("Home", listOf(statement("button"))), body("Detail", emptyList()), body("Action", action)),
             "callRelations" to listOf(

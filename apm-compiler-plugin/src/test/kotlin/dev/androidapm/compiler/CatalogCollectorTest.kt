@@ -12,6 +12,39 @@ import java.nio.file.Path
 import kotlin.io.path.*
 
 class CatalogCollectorTest {
+    @Test fun `explicit super calls bypass overrides while ordinary calls keep dynamic dispatch`() {
+        val catalog = compile("""
+            object Home
+            object Detail
+            object Other
+            open class Parent { open fun destination(): Any = Detail }
+            class Child : Parent() {
+                override fun destination(): Any = Other
+                fun parentDestination(): Any = super.destination()
+            }
+            fun dynamic(parent: Parent): Any = parent.destination()
+            @Composable fun App() {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                val child = Child()
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> { androidx.compose.material3.Button(onClick = {
+                        stack.add(child.parentDestination())
+                        stack.add(dynamic(child))
+                    }) }
+                    entry<Detail> {}
+                    entry<Other> {}
+                })
+            }
+        """.trimIndent())
+        assertEquals(1, catalog.records("callRelations").count { it["superQualified"] == true })
+        val report = TransitionAnalysis.create(catalog).report
+        val effects = report.records("effects").associateBy { it.string("id") }
+        val sequence = report.records("transitions").single().strings("effectRefs").map { effects.getValue(it)["payload"].record()["type"] }
+        assertEquals(listOf("fixture.Detail", "fixture.Other"), sequence)
+        assertThrows(IllegalArgumentException::class.java) {
+            TransitionAnalysis.create(catalog + record("factsCapabilities" to catalog.strings("factsCapabilities").filter { it != "SUPER_CALL_TARGETS_V1" }))
+        }
+    }
     @Test fun `repeated recursive inputs stop without inventing continuation but changing arguments can reach a base case`() {
         for (terminates in listOf(false, true)) {
             val catalog = compile("""

@@ -157,7 +157,7 @@ internal class CatalogCollector(
         }
         val catalog = record(
             "schemaVersion" to 1, "moduleId" to module, "variant" to variant,
-            "factsCapabilities" to listOf("PARAMETER_DEFAULTS_V1", "CLASS_METADATA_V1", "ASSIGNMENTS_V1", "EXPLICIT_ARGUMENT_POSITIONS_V1", "CONTROL_FLOW_IR_V1", "EXPRESSION_CONTROL_FLOW_V1", "INHERITED_CALL_TARGETS_V1"),
+            "factsCapabilities" to listOf("PARAMETER_DEFAULTS_V1", "CLASS_METADATA_V1", "ASSIGNMENTS_V1", "EXPLICIT_ARGUMENT_POSITIONS_V1", "CONTROL_FLOW_IR_V1", "EXPRESSION_CONTROL_FLOW_V1", "INHERITED_CALL_TARGETS_V1", "SUPER_CALL_TARGETS_V1"),
             "collectionStatus" to "COMPLETE_FOR_DECLARED_INPUTS",
             "scope" to record("files" to files, "mode" to "FULL_COMPILATION", "adapter" to "nav3-runtime-1.0.1-1.1.2-v1"),
             "functions" to functions.values.sortedBy { it.string("symbol") },
@@ -186,6 +186,7 @@ internal class CatalogCollector(
         val args = arguments(call)
         val callId = id("call:$fq", call)
         val data = record("id" to callId, "owner" to owner, "target" to symbol(target), "name" to fq,
+            "superQualified" to ((call as? IrCall)?.superQualifierSymbol != null),
             "returnType" to target.returnType.render(), "constructor" to (target is IrConstructor),
             "classOwner" to (target.parent as? IrClass)?.let(::symbol),
             "parameterSchema" to target.parameters.mapIndexed { index, p -> record("ref" to symbol(p), "name" to p.name.asString(), "type" to p.type.render(), "index" to index, "kind" to p.kind.name, "hasDefault" to (p.defaultValue != null)) },

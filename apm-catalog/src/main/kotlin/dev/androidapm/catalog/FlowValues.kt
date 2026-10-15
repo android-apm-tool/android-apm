@@ -72,8 +72,8 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
     fun constant(value: Any?) = record("kind" to "CONSTANT", "value" to value)
     private fun rawType(type: String): String = type.removeSuffix("?").let { if (it in classes) it else it.substringBefore('<') }
     /** Resolve using exact override symbols and the proven receiver hierarchy. */
-    fun implementation(declared: Record, receiver: Record?): Record? {
-        if (declared["overridable"] != true) return declared
+    fun implementation(declared: Record, receiver: Record?, superQualified: Boolean = false): Record? {
+        if (superQualified || declared["overridable"] != true) return declared
         if (receiver?.get("kind") != "INSTANCE") return null
         val cacheKey = declared.string("symbol") to receiver.string("type")
         if (implementations.containsKey(cacheKey)) return implementations[cacheKey]
@@ -339,7 +339,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                     call.string("target") in functions -> {
                         val declared = functions.getValue(call.string("target"))
                         val receiver = args.values.firstOrNull()
-                        val fn = implementation(declared, receiver)
+                        val fn = implementation(declared, receiver, call["superQualified"] == true)
                         if (fn == null) unknown("VIRTUAL_RETURN_UNRESOLVED", call.string("id"))
                         else {
                             val candidates = returns[fn.string("symbol")].orEmpty()
