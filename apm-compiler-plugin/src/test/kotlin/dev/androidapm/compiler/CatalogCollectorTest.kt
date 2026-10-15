@@ -12,6 +12,38 @@ import java.nio.file.Path
 import kotlin.io.path.*
 
 class CatalogCollectorTest {
+    @Test fun `render continuation sampling retains real guards and keeps distinct return outcomes`() {
+        val cases = (0..11).joinToString("\n") { "$it -> \"shared\"" }
+        val catalog = compile("""
+            object Home
+            object Detail
+            object Other
+            fun label(input: Int): String = when(input) { $cases
+                else -> "different"
+            }
+            @Composable fun App(input: Int) {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> {
+                        val text = label(input)
+                        androidx.compose.material3.Button(onClick = { stack.add(if (text == "shared") Detail else Other) })
+                    }
+                    entry<Detail> {}
+                    entry<Other> {}
+                })
+            }
+        """.trimIndent())
+        val full = TransitionAnalysis.create(catalog, limits = TransitionLimits(renderContinuationsPerOutcome = 32)).report
+        val sampled = TransitionAnalysis.create(catalog, limits = TransitionLimits(renderContinuationsPerOutcome = 2)).report
+        val originalGuards = full.records("transitions").map { Json.encode(it["guards"]) }.toSet()
+        assertTrue(sampled.records("transitions").all { Json.encode(it["guards"]) in originalGuards })
+        assertTrue(sampled.records("transitions").all { it.records("guards").isNotEmpty() })
+        val effects = sampled.records("effects").associateBy { it["id"] }
+        assertEquals(setOf("fixture.Detail", "fixture.Other"), sampled.records("transitions").flatMap { it.strings("effectRefs") }.map { effects.getValue(it)["payload"].record().string("type") }.toSet())
+        assertTrue(sampled.records("transitions").size < full.records("transitions").size)
+        assertEquals("TRUNCATED", sampled["coverage"])
+        assertTrue(sampled.records("diagnostics").any { it["code"] == "RENDER_CONTINUATION_BUDGET_EXCEEDED" })
+    }
     @Test fun `repeated symbolic enum tests preserve compatible callbacks and reject conflicting branches`() {
         val catalog = compile("""
             object Home

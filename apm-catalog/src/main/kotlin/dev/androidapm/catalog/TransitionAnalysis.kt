@@ -2,8 +2,8 @@ package dev.androidapm.catalog
 
 data class TransitionResult(val report: Record, val evidence: Record)
 
-data class TransitionLimits(val renderVisits: Int = 5_000_000, val eventVisits: Int = 100_000) {
-    init { require(renderVisits > 0 && eventVisits > 0) { "TRANSITION_LIMITS_MUST_BE_POSITIVE" } }
+data class TransitionLimits(val renderVisits: Int = 5_000_000, val eventVisits: Int = 100_000, val renderContinuationsPerOutcome: Int = 8) {
+    init { require(renderVisits > 0 && eventVisits > 0 && renderContinuationsPerOutcome > 0) { "TRANSITION_LIMITS_MUST_BE_POSITIVE" } }
 }
 
 /** Bounded source interpreter; runtime reachability and unsupported dispatch stay explicit. */
@@ -21,6 +21,7 @@ object TransitionAnalysis {
     // Avoid serializing a large captured environment at every invocation.
     private data class Invocation(val function: String, val environment: Any, val event: String?)
     private data class PendingTrigger(val id: String, val callback: Record, val frame: Frame, val context: Record)
+    private data class RenderOutcome(val environment: Any, val value: Record, val effects: List<String>, val stop: String, val uncertain: Boolean)
     private class Analyzer(val catalog: Record, val entries: Record, val diagnosticContextRefs: Set<String>, val limits: TransitionLimits, val onContext: (Int, Int) -> Unit, val onEvents: (String, Int, Int) -> Unit) {
         val flow = FlowValues(catalog)
         val guardChecks = AccessPaths.GuardChecks()
@@ -134,7 +135,7 @@ object TransitionAnalysis {
                 "identity" to s["identity"], "guards" to hostGuards[h].orEmpty(), "status" to if (s["kind"] == "STACK") "STRUCTURAL" else "UNRESOLVED") }
             val report = record("schemaVersion" to 1, "rulesVersion" to version, "aiMode" to "DISABLED", "catalogFingerprint" to fingerprint(catalog),
                 "diagnosticOnly" to diagnosticContextRefs.isNotEmpty(), "diagnosticContextRefs" to diagnosticContextRefs.sorted(),
-                "limits" to record("renderVisits" to limits.renderVisits, "eventVisits" to limits.eventVisits, "depth" to 384, "branchStates" to 256),
+                "limits" to record("renderVisits" to limits.renderVisits, "eventVisits" to limits.eventVisits, "renderContinuationsPerOutcome" to limits.renderContinuationsPerOutcome, "depth" to 384, "branchStates" to 256),
                 "variant" to catalog["variant"], "contexts" to contexts.sortedBy { it.string("id") }, "initialStacks" to initial.sortedBy { it.string("hostRef") },
                 "triggers" to triggers.values.sortedBy { it.string("id") }, "effects" to effects.values.sortedBy { it.string("id") },
                 "streamBindings" to collectors.values.map { it.filterKeys { key -> key != "callback" } }.sortedBy { it.string("id") },
@@ -210,7 +211,25 @@ object TransitionAnalysis {
             // must not constrain later, independent caller content.
             return if (event == null && cutoffs == before && returned.isNotEmpty() && returned.all { it.stop.isEmpty() && it.effects == parent.effects } &&
                 returned.map { it.value }.distinct().size == 1 && returned.map { it.env }.distinct().size == 1 && returned.all { it.guards.containsAll(parent.guards) })
-                listOf(parent.copy(env = returned.first().env, value = returned.first().value, uncertain = parent.uncertain || returned.any { it.uncertain })) else returned
+                listOf(parent.copy(env = returned.first().env, value = returned.first().value, uncertain = parent.uncertain || returned.any { it.uncertain }))
+                else if (event == null) renderContinuations(returned, ref, c) else returned
+        }
+        /** Keep actual witnesses, never weaken their guards to join partial paths.
+         * Child triggers have already been registered with their complete guards.
+         * Different returned values, heap state, effects and exits never share a quota. */
+        fun renderContinuations(frames: List<Frame>, ref: String, context: Record): List<Frame> {
+            if (frames.size <= limits.renderContinuationsPerOutcome) return frames
+            val counts = mutableMapOf<RenderOutcome, Int>()
+            return frames.filter { frame ->
+                val key = RenderOutcome(flow.environmentKey(frame.env), frame.value, frame.effects, frame.stop, frame.uncertain)
+                val count = counts[key] ?: 0
+                counts[key] = count + 1
+                if (count >= limits.renderContinuationsPerOutcome) {
+                    truncated = true; cutoffs++
+                    problem("RENDER_CONTINUATION_BUDGET_EXCEEDED", ref, context.string("id"))
+                    false
+                } else true
+            }
         }
         fun walk(stmt: Record, f: Frame, c: Record, event: String?, seen: Set<Invocation>, depth: Int): List<Frame> {
             if (!budget(depth, stmt["source"], event)) return listOf(f.copy(uncertain = true, stop = "LIMIT"))
