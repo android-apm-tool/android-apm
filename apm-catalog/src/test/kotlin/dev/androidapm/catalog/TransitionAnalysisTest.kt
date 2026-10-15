@@ -107,7 +107,7 @@ class TransitionAnalysisTest {
         val names = listOf("A", "B", "C", "Blocked")
         val contexts = names.map { record("id" to it, "hostRef" to "host", "keyPatterns" to listOf(constant(it))) }
         val effects = names.map { record("id" to it, "hostRef" to "host", "operation" to "PUSH", "payload" to constant(it)) }
-        fun edge(id: String, from: String, to: String, guards: List<Record> = emptyList()) = record("id" to id, "originContextRefs" to listOf(from), "targetContextRefs" to listOf(to), "effectRefs" to listOf(to), "guards" to guards, "linkage" to "MAY")
+        fun edge(id: String, from: String, to: String, guards: List<Record> = emptyList()) = record("id" to id, "originContextRefs" to listOf(from), "targetContextRefs" to listOf(to), "effectRefs" to listOf(to), "guards" to guards, "linkage" to "MAY", "completion" to "NORMAL_IN_MODELED_FLOW")
         val edges = (0..100).map { edge("loop$it", "A", "A", listOf(record("test" to reference("input$it"), "expected" to true))) } +
             listOf(edge("ab", "A", "B"), edge("bc", "B", "C"), edge("blocked", "C", "Blocked", listOf(record("test" to constant(false), "expected" to true))))
         val report = record("schemaVersion" to 1, "catalogFingerprint" to "fixture", "contexts" to contexts, "effects" to effects, "transitions" to edges,
@@ -115,6 +115,19 @@ class TransitionAnalysisTest {
         val result = AccessPaths.find(report, entries(report), record("maxStates" to 3))
         assertEquals(setOf("A", "B", "C"), result.records("paths").map { it.string("targetContextRef") }.toSet())
         assertEquals("TRUNCATED", result["coverage"])
+    }
+    @Test fun `a navigation prefix followed by an unsupported stack effect cannot establish an access path`() {
+        val base = fixture(action = listOf(statement("push"), statement("indexed")))
+        val push = base.records("callRelations").single { it["id"] == "push" }
+        val indexed = push + record("id" to "indexed", "arguments" to listOf(push.records("arguments").first(), argument("index", constant(0)), push.records("arguments").last()))
+        val report = TransitionAnalysis.create(base + record("callRelations" to base.records("callRelations") + indexed)).report
+        assertEquals("UNSUPPORTED_EFFECT", report.records("transitions").single()["completion"])
+        for (completion in listOf("UNSUPPORTED_EFFECT", "LIMIT", "THROW", "")) {
+            val input = report + record("transitions" to report.records("transitions").map { it + record("completion" to completion) })
+            val paths = AccessPaths.find(input, entries(input))
+            assertTrue(paths.records("paths").all { it.strings("steps").isEmpty() })
+            assertTrue(paths.records("frontier").any { it["code"] == "INCOMPLETE_TRANSITION" })
+        }
     }
     @Test fun `different concrete event types cannot enter singleton branches unless equality is custom or unknown`() {
         val left = record("kind" to "INSTANCE", "identity" to "object:Load", "type" to "Load")

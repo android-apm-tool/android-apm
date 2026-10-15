@@ -74,6 +74,11 @@ object AccessPaths {
             if (state.steps.size >= maxDepth) { if (next.isNotEmpty()) { truncated = true; unresolved("DEPTH_BUDGET_EXCEEDED", key) }; continue }
             for (edge in next) {
                 if (edge["linkage"] == "UNRESOLVED") { unresolved("UNRESOLVED_TRANSITION", edge.string("id")); continue }
+                // A prefix of a stopped handler is not a completed stack plan.
+                // Later, unmodeled effects may clear or replace that destination.
+                if (edge["completion"] !in setOf("NORMAL_IN_MODELED_FLOW", "RETURN")) {
+                    unresolved("INCOMPLETE_TRANSITION", edge.string("id")); continue
+                }
                 // Mutable-state predicates are versioned after state effects; input predicates remain correlated.
                 val guards = state.guards + edge.records("guards").map { guard ->
                     if (guard["mutableState"] == true) guard + record("version" to state.version) else guard

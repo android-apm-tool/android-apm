@@ -39,6 +39,8 @@ Kotlin IR의 fake override에는 실행 본문이 없다. 수집기는 해당 �
 
 간선, 조건, host, stack 효과, POP 제약은 그대로 검사한다. 모든 경로가 전역 최단 순서로 반환된다고 보장하지 않는다. 예산 내에서 각 목적지에 대한 증거를 확보하는 것을 우선하며 한도 초과는 여전히 `TRUNCATED`다. 조회의 maxDepth/maxStates/maxPathsPerTarget/stackSuffix 제한을 유지한다.
 
+핸들러 해석이 `LIMIT`, `THROW`, `UNSUPPORTED_EFFECT` 등으로 중단된 경우, 그 전에 발견한 stack 효과는 진단용 전환에 보존하되 접근 경로에는 사용하지 않는다. 뒤의 미해석 효과가 목적지를 다시 지울 수 있기 때문이다. `INCOMPLETE_TRANSITION`을 frontier에 남기고 정상 완료된 전환만 인수 집계에 사용한다. 예외 직전 이동이 실제 UI에 나타날 수 있는 경우도 이 모델에서는 미발견으로 남는 보수적 선택이다.
+
 ## 파이프라인
 
 ```mermaid
