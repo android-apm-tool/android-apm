@@ -6,6 +6,20 @@ import java.nio.file.Path
 /** Reanalyse a collected snapshot without executing its build again. Still run inside the OS runner. */
 object TransitionMain {
     @JvmStatic fun main(args: Array<String>) {
+        if (args.firstOrNull() == "--diagnostic-context") {
+            require(args.size == 5) { "Expected --diagnostic-context context-ref facts.json merged-manifest.xml NEW-output-directory" }
+            val facts = Json.decode(Files.readString(Path.of(args[2])), HashMap()).record()
+            val entries = Files.newInputStream(Path.of(args[3])).use { EntryPoints.collect(it, facts) }
+            val result = TransitionReports.compact(TransitionAnalysis.create(facts, entries, setOf(args[1]), onEvents = { stage, index, total -> println("Android APM diagnostic: $stage $index/$total") }))
+            val output = Path.of(args[4])
+            require(!Files.exists(output)) { "OUTPUT_GENERATION_ALREADY_EXISTS" }
+            Files.createDirectories(output)
+            mapOf("transitions.json" to result.report, "transition-evidence.json" to result.evidence).forEach { (name, value) ->
+                Files.newBufferedWriter(output.resolve(name)).use { Json.write(value, it, pretty = true); it.append('\n') }
+            }
+            println("Android APM diagnostic: DIAGNOSTIC_ONLY_NOT_ACCEPTANCE_EVIDENCE")
+            return
+        }
         if (args.firstOrNull() == "--modules") {
             require(args.size == 5) { "Expected --modules inputs.json bytecode.json merged-manifest.xml NEW-output-directory" }
             val manifest = Json.decode(Files.readString(Path.of(args[1]))).record()
@@ -24,15 +38,16 @@ object TransitionMain {
         generate(facts, args[1], args[2], query)
     }
     private fun generate(facts: Record, manifest: String, directory: String, query: Record) {
-        val result = TransitionAnalysis.create(facts) { index, total -> println("Android APM transitions: context $index/$total") }
         val entries = Files.newInputStream(Path.of(manifest)).use { EntryPoints.collect(it, facts) }
+        val result = TransitionReports.compact(TransitionAnalysis.create(facts, entries, onEvents = { stage, index, total -> println("Android APM transitions: $stage $index/$total") }) { index, total -> println("Android APM transitions: context $index/$total") })
         val paths = AccessPaths.find(result.report, entries, query)
+        val launcherPaths = AccessPaths.find(result.report, entries, query + record("includeExternalIntents" to false))
         val output = Path.of(directory)
         require(!Files.exists(output)) { "OUTPUT_GENERATION_ALREADY_EXISTS" }
         Files.createDirectories(output)
         Files.newBufferedWriter(output.resolve("linked-facts.json")).use { Json.write(facts, it) }
         mapOf("transitions.json" to result.report, "transition-evidence.json" to result.evidence,
-            "entry-points.json" to entries, "access-paths.json" to paths).forEach { (name, value) ->
+            "entry-points.json" to entries, "access-paths.json" to paths, "launcher-access-paths.json" to launcherPaths).forEach { (name, value) ->
             Files.newBufferedWriter(output.resolve(name)).use { Json.write(value, it, pretty = true); it.append('\n') }
         }
         println(Json.encode(record("status" to "COMPLETED", "summary" to result.report["summary"], "coverage" to paths["coverage"])))

@@ -12,6 +12,493 @@ import java.nio.file.Path
 import kotlin.io.path.*
 
 class CatalogCollectorTest {
+    @Test fun `opaque collection predicates distinguish inputs and objects but reject identical contradictory reads`() {
+        val catalog = compile("""
+            object Home
+            object Detail
+            object Other
+            object Never
+            class Probe(seed: String) {
+                val values = mutableSetOf(seed)
+                fun has(key: String): Boolean = values.contains(key)
+            }
+            @Composable fun App() {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> {
+                        val one = Probe("first")
+                        val two = Probe("second")
+                        if (one.has("first")) {
+                            if (!one.has("second")) androidx.compose.material3.Button(onClick = { stack.add(Detail) })
+                            if (!one.has("first")) androidx.compose.material3.Button(onClick = { stack.add(Never) })
+                            if (!two.has("first")) androidx.compose.material3.Button(onClick = { stack.add(Other) })
+                        }
+                    }
+                    entry<Detail> {}
+                    entry<Other> {}
+                    entry<Never> {}
+                })
+            }
+        """.trimIndent())
+        val result = TransitionAnalysis.create(catalog).report
+        val effects = result.records("effects").associateBy { it["id"] }
+        assertEquals(setOf("fixture.Detail", "fixture.Other"), result.records("transitions").flatMap { it.strings("effectRefs") }.map { effects.getValue(it)["payload"].record().string("type") }.toSet())
+    }
+    @Test fun `dead render labels release branch state while a later callback retains its captured destination`() {
+        val decorations = (0..11).joinToString("\n") { "val label$it = if (input > $it) \"a\" else \"b\"; androidx.compose.material3.Text(label$it)" }
+        for (declaration in listOf("val action = { stack.add(destination); Unit }",
+            "val handler = object { fun send() { stack.add(destination) } }; val action = handler::send",
+            "fun send() { stack.add(destination) }; val action = ::send")) {
+        val catalog = compile("""
+            object Home
+            object Detail
+            object Other
+            @Composable fun App(input: Int, choice: Boolean) {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> {
+                        val destination = if (choice) Detail else Other
+                        $declaration
+                        $decorations
+                        androidx.compose.material3.Button(onClick = action)
+                    }
+                    entry<Detail> {}
+                    entry<Other> {}
+                })
+            }
+        """.trimIndent(), mapOf("RenderText.kt" to "package androidx.compose.material3\n@androidx.compose.runtime.Composable fun Text(text: String) {}"))
+        val result = TransitionAnalysis.create(catalog, limits = TransitionLimits(renderVisits = 5_000)).report
+        val effects = result.records("effects").associateBy { it["id"] }
+        assertEquals(setOf("fixture.Detail", "fixture.Other"), result.records("transitions").flatMap { it.strings("effectRefs") }.map { effects.getValue(it)["payload"].record().string("type") }.toSet(), Json.encode(result))
+        assertFalse(result.records("diagnostics").any { it["code"] == "CONTROL_FLOW_VISIT_LIMIT" })
+        }
+    }
+    @Test fun `render continuation sampling retains real guards and keeps distinct return outcomes`() {
+        val cases = (0..11).joinToString("\n") { "$it -> \"shared\"" }
+        val catalog = compile("""
+            object Home
+            object Detail
+            object Other
+            fun label(input: Int): String = when(input) { $cases
+                else -> "different"
+            }
+            @Composable fun App(input: Int) {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> {
+                        val text = label(input)
+                        androidx.compose.material3.Button(onClick = { stack.add(if (text == "shared") Detail else Other) })
+                    }
+                    entry<Detail> {}
+                    entry<Other> {}
+                })
+            }
+        """.trimIndent())
+        val full = TransitionAnalysis.create(catalog, limits = TransitionLimits(renderContinuationsPerOutcome = 32)).report
+        val sampled = TransitionAnalysis.create(catalog, limits = TransitionLimits(renderContinuationsPerOutcome = 2)).report
+        val originalGuards = full.records("transitions").map { Json.encode(it["guards"]) }.toSet()
+        assertTrue(sampled.records("transitions").all { Json.encode(it["guards"]) in originalGuards })
+        assertTrue(sampled.records("transitions").all { it.records("guards").isNotEmpty() })
+        val effects = sampled.records("effects").associateBy { it["id"] }
+        assertEquals(setOf("fixture.Detail", "fixture.Other"), sampled.records("transitions").flatMap { it.strings("effectRefs") }.map { effects.getValue(it)["payload"].record().string("type") }.toSet())
+        assertTrue(sampled.records("transitions").size < full.records("transitions").size)
+        assertEquals("TRUNCATED", sampled["coverage"])
+        assertTrue(sampled.records("diagnostics").any { it["code"] == "RENDER_CONTINUATION_BUDGET_EXCEEDED" })
+    }
+    @Test fun `trigger quota retains complete witnesses and distinct captured destinations`() {
+        val cases = (0..11).joinToString("\n") { "$it -> \"shared\"" }
+        val catalog = compile("""
+            object Home
+            object Detail
+            object Other
+            fun label(input: Int): String = when(input) { $cases
+                else -> "different"
+            }
+            @Composable fun App(input: Int) {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> {
+                        val text = label(input)
+                        androidx.compose.material3.Button(onClick = { stack.add(if (text == "shared") Detail else Other) })
+                    }
+                    entry<Detail> {}
+                    entry<Other> {}
+                })
+            }
+        """.trimIndent())
+        val full = TransitionAnalysis.create(catalog, limits = TransitionLimits(renderContinuationsPerOutcome = 32, triggerVariantsPerAction = 32)).report
+        val sampled = TransitionAnalysis.create(catalog, limits = TransitionLimits(renderContinuationsPerOutcome = 32, triggerVariantsPerAction = 2)).report
+        val originalGuards = full.records("transitions").map { Json.encode(it["guards"]) }.toSet()
+        assertTrue(sampled.records("transitions").all { Json.encode(it["guards"]) in originalGuards })
+        assertTrue(sampled.records("transitions").all { it.records("guards").isNotEmpty() })
+        val effects = sampled.records("effects").associateBy { it["id"] }
+        assertEquals(setOf("fixture.Detail", "fixture.Other"), sampled.records("transitions").flatMap { it.strings("effectRefs") }.map { effects.getValue(it)["payload"].record().string("type") }.toSet())
+        assertTrue(sampled.records("transitions").size < full.records("transitions").size)
+        val originals = full.records("transitions").associateBy { it["id"] }
+        assertTrue(sampled.records("transitions").all { it == originals[it["id"]] })
+        assertEquals(2, sampled["limits"].record()["triggerVariantsPerAction"])
+        assertThrows(IllegalArgumentException::class.java) { TransitionLimits(triggerVariantsPerAction = 0) }
+        assertEquals("TRUNCATED", sampled["coverage"])
+        assertTrue(sampled.records("diagnostics").any { it["code"] == "TRIGGER_VARIANT_BUDGET_EXCEEDED" })
+    }
+    @Test fun `repeated symbolic enum tests preserve compatible callbacks and reject conflicting branches`() {
+        val catalog = compile("""
+            object Home
+            object Detail
+            object Never
+            enum class Mode { OPEN, CLOSED }
+            @Composable fun Content(mode: Mode, click: () -> Unit, wrong: () -> Unit) {
+                if (mode == Mode.OPEN) {
+                    if (mode == Mode.CLOSED) androidx.compose.material3.Button(onClick = wrong)
+                    else androidx.compose.material3.Button(onClick = click)
+                }
+            }
+            @Composable fun App(mode: Mode) {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> { Content(mode, { stack.add(Detail) }, { stack.add(Never) }) }
+                    entry<Detail> {}
+                    entry<Never> {}
+                })
+            }
+        """.trimIndent())
+        val result = TransitionAnalysis.create(catalog).report
+        val effects = result.records("effects").associateBy { it["id"] }
+        assertEquals(setOf("fixture.Detail"), result.records("transitions").flatMap { it.strings("effectRefs") }.map { effects.getValue(it)["payload"].record().string("type") }.toSet(), Json.encode(result))
+        assertTrue(result.records("transitions").all { it.records("guards").isNotEmpty() })
+    }
+    @Test fun `concrete enum branches cannot register a different mode callback`() {
+        val catalog = compile("""
+            object Home
+            object Detail
+            object Never
+            enum class Mode { OPEN, CLOSED }
+            enum class OtherMode { OPEN }
+            @Composable fun Content(mode: Mode, click: () -> Unit, wrong: () -> Unit) {
+                when (mode) {
+                    Mode.OPEN -> androidx.compose.material3.Button(onClick = click)
+                    Mode.CLOSED -> androidx.compose.material3.Button(onClick = wrong)
+                }
+                if ((mode as Any) == OtherMode.OPEN) androidx.compose.material3.Button(onClick = wrong)
+            }
+            @Composable fun App() {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> { Content(Mode.OPEN, { stack.add(Detail) }, { stack.add(Never) }) }
+                    entry<Detail> {}
+                    entry<Never> {}
+                })
+            }
+        """.trimIndent())
+        val result = TransitionAnalysis.create(catalog).report
+        val edges = result.records("transitions")
+        val effects = result.records("effects").associateBy { it["id"] }
+        assertEquals(setOf("fixture.Detail"), edges.flatMap { it.strings("effectRefs") }.map { effects.getValue(it)["payload"].record().string("type") }.toSet(), Json.encode(result))
+        assertTrue(edges.all { it.records("guards").isEmpty() })
+    }
+    @Test fun `scope adapters preserve returned destination receiver and nonlocal termination`() {
+        val expressions = mapOf("Detail.let { Other }" to "fixture.Other", "Detail.run { Other }" to "fixture.Other",
+            "with(Detail) { Other }" to "fixture.Other", "Detail.also { Other }" to "fixture.Detail", "Detail.apply { Other }" to "fixture.Detail",
+            "Detail.let { return@Button }" to null, "Detail.run { throw IllegalStateException() }" to null)
+        for ((expression, expected) in expressions) {
+            val catalog = compile("""
+                object Home
+                object Detail
+                object Other
+                @Composable fun App() {
+                    val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                    androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                        entry<Home> { androidx.compose.material3.Button(onClick = {
+                            val destination = $expression
+                            stack.add(destination)
+                        }) }
+                        entry<Detail> {}
+                        entry<Other> {}
+                    })
+                }
+            """.trimIndent())
+            val result = TransitionAnalysis.create(catalog).report
+            val effects = result.records("effects").associateBy { it["id"] }
+            val destinations = result.records("transitions").flatMap { it.strings("effectRefs") }.map { effects.getValue(it)["payload"].record().string("type") }.toSet()
+            assertEquals(if (expected == null) emptySet() else setOf(expected), destinations, expression)
+        }
+    }
+    @Test fun `warm links require manifest matching parser acceptance and actual stack application`() {
+        val catalog = compile("""
+            object Home
+            data class Detail(val token: String)
+            @javax.inject.Singleton class Navigator @javax.inject.Inject constructor() {
+                private val channel = kotlinx.coroutines.channels.Channel<Any>()
+                val events = channel.receiveAsFlow()
+                fun navigate(value: Any) { channel.trySend(value) }
+            }
+            @dagger.hilt.android.AndroidEntryPoint class Activity : android.app.Activity() {
+                @javax.inject.Inject lateinit var navigator: Navigator
+                override fun onCreate() { setContent { App() } }
+                override fun onNewIntent(intent: android.content.Intent) {
+                    val uri = intent.data ?: return
+                    val segments = uri.pathSegments
+                    if (segments.firstOrNull() != "invite") return
+                    val token = segments.getOrNull(1)?.takeIf { it.isNotBlank() } ?: return
+                    val page = token.let { Detail(it) }.also { check(it.token.isNotBlank()) }
+                    navigator.navigate(page)
+                }
+                @Composable fun App() {
+                    val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                    androidx.compose.runtime.LaunchedEffect(Unit) { navigator.events.collect { stack.add(it) } }
+                    androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                        entry<Home> {}
+                        entry<Detail> {}
+                    })
+                }
+            }
+        """.trimIndent().let { "import kotlinx.coroutines.flow.*\nimport androidx.activity.compose.setContent\n" + it }, mapOf(
+            "AndroidActivity.kt" to "package android.app\nopen class Activity { open fun onCreate() {}\nopen fun onNewIntent(intent: android.content.Intent) {} }",
+            "AndroidIntent.kt" to "package android.content\nabstract class Intent { abstract val data: android.net.Uri? }",
+            "AndroidUri.kt" to "package android.net\nabstract class Uri { abstract val pathSegments: List<String> }",
+            "SetContent.kt" to "package androidx.activity.compose\nfun android.app.Activity.setContent(content: @androidx.compose.runtime.Composable () -> Unit) {}"
+        ))
+        fun entries(prefix: String, exported: Boolean = true) = EntryPoints.collect("""
+            <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="fixture"><application>
+              <activity android:name="fixture.Activity" android:exported="$exported" android:launchMode="singleTask">
+                <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+                <intent-filter><action android:name="android.intent.action.VIEW"/><category android:name="android.intent.category.DEFAULT"/><category android:name="android.intent.category.BROWSABLE"/>
+                  <data android:scheme="https" android:host="example.test" android:pathPrefix="$prefix"/>
+                </intent-filter>
+              </activity>
+            </application></manifest>
+        """.trimIndent().byteInputStream(), catalog)
+        val input = entries("/invite")
+        val result = TransitionReports.compact(TransitionAnalysis.create(catalog, input))
+        val edges = result.report.records("transitions")
+        assertTrue(edges.any { it.string("externalEntryRef").isNotEmpty() && it.strings("targetContextRefs").isNotEmpty() }, Json.encode(result.report))
+        assertTrue(result.evidence.records("evidence").any { it["kind"] == "EXTERNAL_INTENT_DELIVERY" })
+        assertTrue(result.evidence.records("evidence").any { it["kind"] == "CHANNEL_TRANSFER" })
+        val paths = AccessPaths.find(result.report, input)
+        val launcher = AccessPaths.find(result.report, input, record("includeExternalIntents" to false))
+        assertEquals(2, paths.records("paths").map { it["targetContextRef"] }.toSet().size, Json.encode(paths))
+        assertEquals(1, launcher.records("paths").map { it["targetContextRef"] }.toSet().size)
+        assertTrue(paths.records("paths").any { it.strings("externalEntryRefs").isNotEmpty() })
+        for (bad in listOf(entries("/wrong"), entries("/invite", false)))
+            assertTrue(TransitionAnalysis.create(catalog, bad).report.records("transitions").isEmpty())
+        val fakeLifecycle = catalog + record("functions" to catalog.records("functions").map { fn ->
+            if (fn["simpleName"] == "onNewIntent") fn + record("overrideSymbols" to emptyList<String>()) else fn
+        })
+        assertTrue(TransitionAnalysis.create(fakeLifecycle, input + record("catalogFingerprint" to EntryPoints.unavailable(fakeLifecycle)["catalogFingerprint"])).report.records("transitions").isEmpty())
+        val noDelivery = catalog + record("functionBodies" to catalog.records("functionBodies").map { body ->
+            if (body.string("owner").contains("Navigator.navigate")) body + record("body" to record("op" to "BLOCK", "statements" to emptyList<Record>())) else body
+        })
+        val blockedEntries = input + record("catalogFingerprint" to EntryPoints.unavailable(noDelivery)["catalogFingerprint"])
+        assertTrue(TransitionAnalysis.create(noDelivery, blockedEntries).report.records("transitions").isEmpty(), "Parser return without a delivered stack effect must not count")
+    }
+    @Test fun `conditional callback adapters preserve predicate truth and do not invent clicks`() {
+        for (adapter in listOf("takeIf", "takeUnless")) for (flag in listOf("true", "false", "input")) {
+            val catalog = compile("""
+                object Home
+                object Detail
+                @Composable fun App(input: Boolean) {
+                    val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                    androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                        entry<Home> {
+                            val click = { stack.add(Detail); Unit }.$adapter { $flag }
+                            click?.let { androidx.compose.material3.Button(onClick = it) }
+                        }
+                        entry<Detail> {}
+                    })
+                }
+            """.trimIndent())
+            val result = TransitionAnalysis.create(catalog).report
+            val expected = flag == "input" || (flag == "true") == (adapter == "takeIf")
+            assertEquals(expected, result.records("transitions").isNotEmpty(), Json.encode(result))
+            if (flag == "input") assertEquals(setOf(adapter == "takeIf"), result.records("transitions").flatMap { it.records("guards") }.map { it["expected"] }.toSet())
+        }
+    }
+    @Test fun `built menu callbacks retain item identity guards order and early returns`() {
+        val catalog = compile("""
+            object Home
+            object Detail
+            object Other
+            object Never
+            data class Menu(val click: () -> Unit)
+            @Composable fun App(flag: Boolean) {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> {
+                        val menu = buildList {
+                            if (flag) { add(Menu { stack.add(Detail) }); return@buildList }
+                            add(Menu { stack.add(Other) })
+                            if (false) add(Menu { stack.add(Never) })
+                        }
+                        val unused = buildList { add(Menu { stack.add(Never) }) }
+                        menu.forEach { item -> androidx.compose.material3.Button(onClick = item.click) }
+                    }
+                    entry<Detail> {}
+                    entry<Other> {}
+                    entry<Never> {}
+                })
+            }
+        """.trimIndent())
+        val report = TransitionAnalysis.create(catalog).report
+        val effects = report.records("effects").associateBy { it.string("id") }
+        val edges = report.records("transitions")
+        assertEquals(setOf("fixture.Detail", "fixture.Other"), edges.flatMap { it.strings("effectRefs") }.map { effects.getValue(it)["payload"].record().string("type") }.toSet(), Json.encode(report))
+        assertTrue(edges.all { it.strings("effectRefs").size == 1 })
+        assertEquals(setOf(true, false), edges.flatMap { it.records("guards") }.map { it["expected"] }.toSet())
+    }
+    @Test fun `unsupported builder mutations cannot leave stale callbacks reachable`() {
+        val catalog = compile("""
+            object Home
+            object Detail
+            @Composable fun App() {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> {
+                        val menu = buildList<() -> Unit> { add { stack.add(Detail) }; clear() }
+                        menu.forEach { androidx.compose.material3.Button(onClick = it) }
+                    }
+                    entry<Detail> {}
+                })
+            }
+        """.trimIndent())
+        val report = TransitionAnalysis.create(catalog).report
+        assertTrue(report.records("transitions").isEmpty())
+        assertTrue(report.records("diagnostics").any { it["code"] == "LIST_BUILDER_OPERATION_UNSUPPORTED" })
+    }
+    @Test fun `explicit super calls bypass overrides while ordinary calls keep dynamic dispatch`() {
+        val catalog = compile("""
+            object Home
+            object Detail
+            object Other
+            open class Parent { open fun destination(): Any = Detail }
+            class Child : Parent() {
+                override fun destination(): Any = Other
+                fun parentDestination(): Any = super.destination()
+            }
+            fun dynamic(parent: Parent): Any = parent.destination()
+            @Composable fun App() {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                val child = Child()
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> { androidx.compose.material3.Button(onClick = {
+                        stack.add(child.parentDestination())
+                        stack.add(dynamic(child))
+                    }) }
+                    entry<Detail> {}
+                    entry<Other> {}
+                })
+            }
+        """.trimIndent())
+        assertEquals(1, catalog.records("callRelations").count { it["superQualified"] == true })
+        val report = TransitionAnalysis.create(catalog).report
+        val effects = report.records("effects").associateBy { it.string("id") }
+        val sequence = report.records("transitions").single().strings("effectRefs").map { effects.getValue(it)["payload"].record()["type"] }
+        assertEquals(listOf("fixture.Detail", "fixture.Other"), sequence)
+        assertThrows(IllegalArgumentException::class.java) {
+            TransitionAnalysis.create(catalog + record("factsCapabilities" to catalog.strings("factsCapabilities").filter { it != "SUPER_CALL_TARGETS_V1" }))
+        }
+    }
+    @Test fun `repeated recursive inputs stop without inventing continuation but changing arguments can reach a base case`() {
+        for (terminates in listOf(false, true)) {
+            val catalog = compile("""
+                object Home
+                object Detail
+                fun repeatAction(next: Boolean, action: () -> Unit) {
+                    if (next) repeatAction(${if (terminates) "false" else "true"}, action) else action()
+                }
+                @Composable fun App() {
+                    val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                    androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                        entry<Home> { androidx.compose.material3.Button(onClick = {
+                            repeatAction(true) { stack.add(Detail) }
+                            stack.add(Detail)
+                        }) }
+                        entry<Detail> {}
+                    })
+                }
+            """.trimIndent())
+            val report = TransitionAnalysis.create(catalog).report
+            assertEquals(terminates, report.records("transitions").isNotEmpty(), Json.encode(report))
+            assertEquals(!terminates, report.records("diagnostics").any { it["code"] == "RECURSIVE_CONTROL_FLOW" })
+            assertFalse(report.records("diagnostics").any { it["code"] == "CONTROL_FLOW_DEPTH_LIMIT" })
+        }
+    }
+    @Test fun `compiled Result callbacks preserve values receivers and exclusive failure branches`() {
+        for (work in listOf("runCatching { Detail }", "Detail.runCatching { this }", "runCatching<Any> { throw IllegalStateException() }")) {
+            val catalog = compile("""
+                object Home
+                object Detail
+                @Composable fun App() {
+                    val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                    androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                        entry<Home> { androidx.compose.material3.Button(onClick = {
+                            $work.onSuccess { stack.add(it) }.onFailure { stack.clear() }
+                        }) }
+                        entry<Detail> {}
+                    })
+                }
+            """.trimIndent())
+            val report = TransitionAnalysis.create(catalog).report
+            val effects = report.records("effects").associateBy { it.string("id") }
+            val edges = report.records("transitions")
+            val detail = report.records("contexts").single { it.records("keyPatterns").any { key -> key["type"] == "fixture.Detail" } }.string("id")
+            assertEquals(!work.contains("throw"), edges.any { detail in it.strings("targetContextRefs") }, work)
+            assertFalse(edges.any { edge -> edge.strings("effectRefs").map { effects[it]?.get("operation") }.toSet().containsAll(setOf("PUSH", "CLEAR")) }, work)
+        }
+    }
+    @Test fun `anonymous receiver methods use their own captured callback`() {
+        val catalog = compile("""
+            object Home
+            object Detail
+            interface Relay { fun run() }
+            fun relay(action: () -> Unit): Relay {
+                val stored = action
+                return object : Relay { override fun run() { stored() } }
+            }
+            @Composable fun App() {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                val active = relay { stack.add(Detail) }
+                val unused = relay { stack.clear() }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> { androidx.compose.material3.Button(onClick = { active.run() }) }
+                    entry<Detail> {}
+                })
+            }
+        """.trimIndent())
+        val report = TransitionAnalysis.create(catalog).report
+        val effects = report.records("effects").associateBy { it.string("id") }
+        assertTrue(report.records("transitions").any { it.strings("targetContextRefs").isNotEmpty() }, Json.encode(report))
+        assertTrue(report.records("transitions").all { edge -> edge.strings("effectRefs").all { effects[it]?.get("operation") == "PUSH" } })
+    }
+    @Test fun `inherited generic methods and getters retain their declaring symbols and argument bindings`() {
+        val catalog = compile("""
+            object Home
+            object Detail
+            open class Parent<T>(val value: T) {
+                fun relay(action: (T) -> Unit) { action(value) }
+                open fun destination(): Any = Detail
+            }
+            class Child : Parent<Any>(Detail)
+            @Composable fun App() {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                val child = Child()
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> { androidx.compose.material3.Button(onClick = { child.relay { stack.add(child.destination()) } }) }
+                    entry<Detail> {}
+                })
+            }
+        """.trimIndent())
+        assertTrue(catalog.strings("factsCapabilities").contains("INHERITED_CALL_TARGETS_V1"))
+        val functions = catalog.records("functions").associateBy { it.string("symbol") }
+        val inherited = catalog.records("callRelations").filter { it.string("name") in setOf("fixture.Child.relay", "fixture.Child.destination") }
+        assertEquals(2, inherited.size)
+        inherited.forEach { call ->
+            val declared = functions.getValue(call.string("target"))
+            assertEquals("fixture.Parent", declared["classOwner"])
+            assertTrue(call.records("arguments").all { arg -> declared.records("parameters").any { it["ref"] == arg["parameter"] } })
+        }
+        val report = TransitionAnalysis.create(catalog).report
+        assertTrue(report.records("transitions").any { it.strings("targetContextRefs").isNotEmpty() }, Json.encode(report))
+    }
     @Test fun `Elvis returns and throws inside arguments preserve expression control flow`() {
         for ((argument, throwing) in listOf("null" to false, "\"present\"" to false, "null" to true)) {
             val exit = if (throwing) "throw IllegalStateException()" else "return Detail"
@@ -76,7 +563,7 @@ class CatalogCollectorTest {
     @TempDir lateinit var directory: Path
     private fun Record.strings(key: String): List<String> = (this[key] as? List<*>)?.filterIsInstance<String>().orEmpty()
 
-    private fun compile(source: String): Record {
+    private fun compile(source: String, extraSources: Map<String, String> = emptyMap()): Record {
         val annotations = directory.resolve("Annotations.kt").apply { writeText("""
             package androidx.compose.runtime
             @Target(AnnotationTarget.FUNCTION, AnnotationTarget.TYPE)
@@ -159,6 +646,7 @@ class CatalogCollectorTest {
             """,
         )
         args += diFixtures.map { (name, text) -> directory.resolve(name).apply { writeText(text.trimIndent()) }.toString() }
+        args += extraSources.map { (name, text) -> directory.resolve(name).apply { writeText(text.trimIndent()) }.toString() }
         mapOf("catalog" to "true", "catalogFile" to report.toString(), "moduleId" to "fixture:app",
             "variant" to "debug", "projectRoot" to directory.toString()).forEach { (key, value) ->
             args += listOf("-P", "plugin:dev.androidapm.compiler:$key=$value")

@@ -4,6 +4,185 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class TransitionAnalysisTest {
+    @Test fun `opaque calls retain argument and field allocation identity without weakening same input guards`() {
+        val create = call("set", "kotlin.collections.mutableSetOf", emptyList())
+        val contains = call("contains", "kotlin.collections.MutableSet.contains", listOf(argument("this", reference("setValue"), "DispatchReceiver"), argument("element", reference("element"))))
+        val flow = FlowValues(record("callRelations" to listOf(create, contains)))
+        fun set(owner: String, unrelated: Int) = flow.eval(record("kind" to "CALL", "callId" to "set", "type" to "kotlin.collections.MutableSet<kotlin.String>"),
+            mapOf("@receiver" to record("kind" to "INSTANCE", "identity" to owner), "unrelated" to constant(unrelated)))
+        val one = set("owner:one", 1)
+        assertEquals(one, set("owner:one", 2))
+        assertNotEquals(one, set("owner:two", 1))
+        fun test(receiver: Record, element: String) = flow.eval(record("kind" to "CALL", "callId" to "contains", "type" to "kotlin.Boolean"), mapOf("setValue" to receiver, "element" to constant(element)))
+        fun guard(value: Record, expected: Boolean) = record("test" to value, "expected" to expected)
+        assertTrue(AccessPaths.contradictory(listOf(guard(test(one, "a"), true), guard(test(one, "a"), false))))
+        assertFalse(AccessPaths.contradictory(listOf(guard(test(one, "a"), true), guard(test(one, "b"), false))))
+        assertFalse(AccessPaths.contradictory(listOf(guard(test(one, "a"), true), guard(test(set("owner:two", 1), "a"), false))))
+    }
+    @Test fun `unresolved CompositionLocal reads are scoped to composition context`() {
+        val current = call("local", "androidx.compose.runtime.CompositionLocal.<get-current>", listOf(argument("this", record("kind" to "COMPOSITION_LOCAL", "identity" to "Local"), "DispatchReceiver")))
+        val flow = FlowValues(record("callRelations" to listOf(current)))
+        fun read(context: String) = flow.eval(record("kind" to "CALL", "callId" to "local"), mapOf("@context" to record("ref" to context)))
+        assertEquals(read("one"), read("one"))
+        assertNotEquals(read("one"), read("two"))
+        assertEquals("UNKNOWN", read("one")["kind"])
+    }
+    @Test fun `injected field lookup requires unique declaring class and exact annotations`() {
+        val field = record("ref" to "Activity.helper", "type" to "Helper", "annotations" to listOf(record("name" to "javax.inject.Inject")))
+        val activity = record("symbol" to "Activity", "annotations" to listOf(record("name" to "dagger.hilt.android.AndroidEntryPoint")), "fields" to listOf(field))
+        val helper = record("symbol" to "Helper", "annotations" to listOf(record("name" to "javax.inject.Singleton")))
+        val constructor = record("symbol" to "Helper.init", "classOwner" to "Helper", "constructor" to true, "annotations" to listOf("javax.inject.Inject"))
+        fun evaluate(owners: List<Record>, ref: String = "Activity.helper") = FlowValues(record("classes" to owners + helper, "functions" to listOf(constructor))).eval(reference(ref))
+        assertEquals("di:SingletonComponent:Helper", evaluate(listOf(activity))["identity"])
+        assertEquals("SYMBOLIC", evaluate(listOf(activity), "Other.helper")["kind"])
+        assertEquals("SYMBOLIC", evaluate(listOf(activity, activity + record("symbol" to "Other")))["kind"])
+        assertEquals("SYMBOLIC", evaluate(listOf(activity + record("annotations" to emptyList<Record>())))["kind"])
+        assertEquals("SYMBOLIC", evaluate(listOf(activity + record("fields" to listOf(field + record("annotations" to emptyList<Record>())))))["kind"])
+    }
+    @Test fun `filtered diagnostics cannot be passed off as complete access evidence`() {
+        val facts = fixture()
+        val full = TransitionAnalysis.create(facts).report
+        val context = full.records("contexts").first().string("id")
+        val diagnostic = TransitionAnalysis.create(facts, diagnosticContextRefs = setOf(context)).report
+        assertEquals(true, diagnostic["diagnosticOnly"])
+        assertThrows(IllegalArgumentException::class.java) { AccessPaths.find(diagnostic, entries(diagnostic)) }
+        assertThrows(IllegalArgumentException::class.java) { TransitionAnalysis.create(facts, diagnosticContextRefs = setOf("missing")) }
+    }
+    @Test fun `predicate fingerprints may be reused but guard truth and state versions cannot`() {
+        val checks = AccessPaths.GuardChecks()
+        val test = record("kind" to "PREDICATE", "operation" to "input")
+        fun guard(value: Boolean, version: Int) = record("test" to test, "expected" to value, "version" to version)
+        assertTrue(checks.contradictory(listOf(guard(true, 0), guard(false, 0))))
+        assertFalse(checks.contradictory(listOf(guard(true, 0), guard(false, 1))))
+        assertFalse(checks.contradictory(listOf(guard(false, 0))))
+        val copy = record("kind" to "PREDICATE", "operation" to "input")
+        assertTrue(checks.contradictory(listOf(guard(true, 0), record("test" to copy, "expected" to false, "version" to 0))))
+    }
+    @Test fun `unproven field receivers cannot borrow the screen context as Channel ownership`() {
+        val flow = FlowValues(record("callRelations" to listOf(call("channel", "kotlinx.coroutines.channels.Channel", emptyList()))))
+        val expr = record("kind" to "CALL", "callId" to "channel")
+        val env = mapOf("@context" to record("ref" to "screen"))
+        assertEquals(true, flow.eval(expr, env)["ownerProven"])
+        assertEquals(false, flow.eval(expr, env + ("@receiver" to record("kind" to "UNKNOWN")))["ownerProven"])
+        fun owned(id: String) = flow.eval(expr, env + ("@receiver" to record("kind" to "INSTANCE", "identity" to id)))
+        assertNotEquals(owned("one")["identity"], owned("two")["identity"])
+    }
+    @Test fun `LocalActivity field form needs proven Activity context and respects explicit providers`() {
+        val getter = call("currentActivity", "androidx.compose.runtime.ProvidableCompositionLocal.<get-current>", listOf(argument("this", reference("androidx.activity.compose.LocalActivity"), "DispatchReceiver")))
+        val flow = FlowValues(record("callRelations" to listOf(getter)))
+        val expression = record("kind" to "CALL", "callId" to "currentActivity")
+        val owner = record("kind" to "ACTIVITY_OWNER", "identity" to "activity:One")
+        assertEquals(owner, flow.eval(expression, mapOf("@activityOwner" to owner)))
+        assertEquals("UNKNOWN", flow.eval(expression)["kind"])
+        assertEquals(constant(null), flow.eval(expression, mapOf("@activityOwner" to owner, "@local:androidx.activity.compose.LocalActivity" to constant(null))))
+    }
+    @Test fun `screen collectors resolve independently of declaration order without crossing screens or channels`() {
+        for (sameChannel in listOf(true, false)) for (sameScreen in listOf(true, false)) {
+            val base = fixture(action = listOf(statement("send")))
+            fun stream(id: String) = record("kind" to "STREAM", "identity" to id, "ownerProven" to true, "streamKind" to "CHANNEL")
+            val input = base + record("functions" to base.records("functions") + listOf("Subscribe", "Receive").map { record("symbol" to it, "parameters" to emptyList<Record>()) },
+                "callRelations" to base.records("callRelations") + listOf(
+                    call("effect", "androidx.compose.runtime.LaunchedEffect", listOf(argument("block", function("Subscribe")))),
+                    call("collect", "kotlinx.coroutines.flow.Flow.collect", listOf(argument("this", stream("one"), "DispatchReceiver"), argument("collector", function("Receive")))),
+                    call("send", "kotlinx.coroutines.channels.SendChannel.send", listOf(argument("this", stream(if (sameChannel) "one" else "two"), "DispatchReceiver"), argument("element", constant("event"))))),
+                "functionBodies" to base.records("functionBodies").filter { it["owner"] !in setOf("Home", "Detail") } + listOf(
+                    body("Home", listOf(statement("button")) + if (sameScreen) listOf(statement("effect")) else emptyList()),
+                    body("Detail", if (sameScreen) emptyList() else listOf(statement("effect"))), body("Subscribe", listOf(statement("collect"))), body("Receive", listOf(statement("push")))))
+            val result = TransitionAnalysis.create(input)
+            assertEquals(if (sameChannel && sameScreen) 1 else 0, result.report.records("transitions").size)
+            if (sameChannel && sameScreen) assertTrue(result.evidence.records("evidence").any { it["kind"] == "CHANNEL_TRANSFER" })
+        }
+    }
+    @Test fun `explicit ViewModel owner and key preserve identity without accepting unknown owners`() {
+        val constructor = record("symbol" to "Vm.init", "classOwner" to "Vm", "constructor" to true, "annotations" to listOf("javax.inject.Inject"), "parameters" to emptyList<Record>())
+        fun evaluate(owner: Record, key: Any?, context: String): Record {
+            val call = call("vm", "androidx.hilt.navigation.compose.hiltViewModel", listOf(argument("viewModelStoreOwner", owner), argument("key", constant(key))))
+            val flow = FlowValues(record("functions" to listOf(constructor), "classes" to listOf(record("symbol" to "Vm", "annotations" to listOf(record("name" to "dagger.hilt.android.lifecycle.HiltViewModel")))), "callRelations" to listOf(call)))
+            return flow.eval(record("kind" to "CALL", "callId" to "vm", "type" to "Vm"), mapOf("@context" to record("ref" to context)))
+        }
+        val owner = record("kind" to "ACTIVITY_OWNER", "identity" to "activity:One")
+        val first = evaluate(owner, null, "first")
+        assertEquals(first["identity"], evaluate(owner, null, "second")["identity"])
+        assertNotEquals(first["identity"], evaluate(owner, "other-key", "first")["identity"])
+        assertNotEquals(first["identity"], evaluate(owner + record("identity" to "activity:Two"), null, "first")["identity"])
+        assertEquals("UNKNOWN", evaluate(reference("unprovenOwner"), null, "first")["kind"])
+    }
+    @Test fun `Activity results require a launch of the exact registered launcher`() {
+        for (receiver in listOf(reference("launcher"), reference("unknownLauncher"))) {
+            val base = fixture(action = listOf(statement("launch")))
+            val input = base + record("functions" to base.records("functions") + record("symbol" to "Result", "parameters" to emptyList<Record>()),
+                "callRelations" to base.records("callRelations") + listOf(
+                    call("register", "androidx.activity.compose.rememberLauncherForActivityResult", listOf(argument("onResult", function("Result")))),
+                    call("launch", "androidx.activity.compose.ManagedActivityResultLauncher.launch", listOf(argument("this", receiver, "DispatchReceiver")))),
+                "functionBodies" to base.records("functionBodies").filter { it["owner"] != "Home" } + listOf(
+                    body("Home", listOf(record("op" to "DECLARE", "ref" to "launcher", "value" to record("kind" to "CALL", "callId" to "register")), statement("button"))),
+                    body("Result", listOf(statement("push")))))
+            val result = TransitionAnalysis.create(input)
+            assertEquals(if (receiver == reference("launcher")) 1 else 0, result.report.records("transitions").size)
+            if (receiver == reference("launcher")) assertTrue(result.evidence.records("evidence").any { it["kind"] == "ACTIVITY_RESULT_TRANSFER" })
+            val withoutClick = input + record("functionBodies" to input.records("functionBodies").map { if (it["owner"] == "Home") body("Home", listOf(statement("register"))) else it })
+            assertTrue(TransitionAnalysis.create(withoutClick).report.records("transitions").isEmpty())
+        }
+    }
+    @Test fun `material button variants are triggers but unrelated similarly named calls are not`() {
+        for (name in listOf("androidx.compose.material3.TextButton", "androidx.compose.material3.FilledTonalButton", "example.TextButton")) {
+            for (enabled in listOf(true, false)) {
+                val base = fixture(enabled)
+                val input = base + record("callRelations" to base.records("callRelations").map { if (it["id"] == "button") it + record("name" to name, "target" to name) else it })
+                assertEquals(if (enabled && name.startsWith("androidx.")) 1 else 0, TransitionAnalysis.create(input).report.records("transitions").size)
+            }
+        }
+    }
+    @Test fun `source operator invoke is dispatched as a method not an arbitrary function argument`() {
+        val base = fixture(action = listOf(statement("operator")))
+        val input = base + record("functions" to base.records("functions") + record("symbol" to "UseCase.invoke", "parameters" to emptyList<Record>()),
+            "callRelations" to base.records("callRelations") + call("operator", "UseCase.invoke", listOf(argument("this", record("kind" to "INSTANCE", "type" to "UseCase", "identity" to "usecase"), "DispatchReceiver"))),
+            "functionBodies" to base.records("functionBodies") + body("UseCase.invoke", listOf(statement("push"))))
+        assertEquals(1, TransitionAnalysis.create(input).report.records("transitions").size)
+    }
+    @Test fun `Result success and failure callbacks remain mutually exclusive and explicit throw skips success`() {
+        for (throws in listOf(false, true)) {
+            val base = fixture(action = listOf(statement("failure")))
+            val input = base + record("functions" to base.records("functions") + listOf("Work", "Success", "Failure").map { record("symbol" to it, "parameters" to emptyList<Record>()) },
+                "callRelations" to base.records("callRelations") + listOf(
+                    call("catch", "kotlin.runCatching", listOf(argument("block", function("Work")))),
+                    call("success", "kotlin.onSuccess", listOf(argument("this", record("kind" to "CALL", "callId" to "catch"), "ExtensionReceiver"), argument("action", function("Success")))),
+                    call("failure", "kotlin.onFailure", listOf(argument("this", record("kind" to "CALL", "callId" to "success"), "ExtensionReceiver"), argument("action", function("Failure"))))),
+                "functionBodies" to base.records("functionBodies") + listOf(body("Work", if (throws) listOf(record("op" to "THROW")) else emptyList()),
+                    body("Success", listOf(statement("push"))), body("Failure", listOf(statement("clear")))))
+            val report = TransitionAnalysis.create(input).report
+            val effects = report.records("effects").associateBy { it.string("id") }
+            val sequences = report.records("transitions").map { it.strings("effectRefs").map { ref -> effects.getValue(ref)["operation"] } }
+            assertFalse(sequences.any { it.contains("PUSH") && it.contains("CLEAR") })
+            assertEquals(!throws, sequences.any { it.contains("PUSH") })
+        }
+    }
+    @Test fun `fair exploration reaches low fanout destinations without accepting false guards`() {
+        val names = listOf("A", "B", "C", "Blocked")
+        val contexts = names.map { record("id" to it, "hostRef" to "host", "keyPatterns" to listOf(constant(it))) }
+        val effects = names.map { record("id" to it, "hostRef" to "host", "operation" to "PUSH", "payload" to constant(it)) }
+        fun edge(id: String, from: String, to: String, guards: List<Record> = emptyList()) = record("id" to id, "originContextRefs" to listOf(from), "targetContextRefs" to listOf(to), "effectRefs" to listOf(to), "guards" to guards, "linkage" to "MAY", "completion" to "NORMAL_IN_MODELED_FLOW")
+        val edges = (0..100).map { edge("loop$it", "A", "A", listOf(record("test" to reference("input$it"), "expected" to true))) } +
+            listOf(edge("ab", "A", "B"), edge("bc", "B", "C"), edge("blocked", "C", "Blocked", listOf(record("test" to constant(false), "expected" to true))))
+        val report = record("schemaVersion" to 1, "catalogFingerprint" to "fixture", "contexts" to contexts, "effects" to effects, "transitions" to edges,
+            "initialStacks" to listOf(record("hostRef" to "host", "status" to "STRUCTURAL", "initialKeys" to listOf(constant("A")))))
+        val result = AccessPaths.find(report, entries(report), record("maxStates" to 3))
+        assertEquals(setOf("A", "B", "C"), result.records("paths").map { it.string("targetContextRef") }.toSet())
+        assertEquals("TRUNCATED", result["coverage"])
+    }
+    @Test fun `a navigation prefix followed by an unsupported stack effect cannot establish an access path`() {
+        val base = fixture(action = listOf(statement("push"), statement("indexed")))
+        val push = base.records("callRelations").single { it["id"] == "push" }
+        val indexed = push + record("id" to "indexed", "arguments" to listOf(push.records("arguments").first(), argument("index", constant(0)), push.records("arguments").last()))
+        val report = TransitionAnalysis.create(base + record("callRelations" to base.records("callRelations") + indexed)).report
+        assertEquals("UNSUPPORTED_EFFECT", report.records("transitions").single()["completion"])
+        for (completion in listOf("UNSUPPORTED_EFFECT", "LIMIT", "THROW", "")) {
+            val input = report + record("transitions" to report.records("transitions").map { it + record("completion" to completion) })
+            val paths = AccessPaths.find(input, entries(input))
+            assertTrue(paths.records("paths").all { it.strings("steps").isEmpty() })
+            assertTrue(paths.records("frontier").any { it["code"] == "INCOMPLETE_TRANSITION" })
+        }
+    }
     @Test fun `different concrete event types cannot enter singleton branches unless equality is custom or unknown`() {
         val left = record("kind" to "INSTANCE", "identity" to "object:Load", "type" to "Load")
         val right = record("kind" to "INSTANCE", "identity" to "allocation:Open", "type" to "Open")
@@ -59,6 +238,22 @@ class TransitionAnalysisTest {
             assertEquals("COMPOSITION_LOCAL_PROVIDER_UNRESOLVED", flow.eval(expr, mapOf("@local:different" to stream))["reason"])
             assertEquals("COMPOSITION_LOCAL_PROVIDER_UNRESOLVED", flow.eval(expr)["reason"])
         }
+    }
+    @Test fun `render and event limits are independent explicit and fail closed`() {
+        val base = fixture()
+        val input = base + record("callRelations" to base.records("callRelations") + call("decoration", "androidx.compose.foundation.layout.Box", emptyList()),
+            "functionBodies" to base.records("functionBodies").filter { it["owner"] != "Home" } + body("Home", List(100) { statement("decoration") } + statement("button")))
+        val lowRender = TransitionAnalysis.create(input, limits = TransitionLimits(renderVisits = 100)).report
+        assertTrue(lowRender.records("transitions").isEmpty())
+        assertTrue(lowRender.records("diagnostics").any { it["code"] == "CONTROL_FLOW_VISIT_LIMIT" && it["detail"] == "RENDER" })
+        val enough = TransitionAnalysis.create(input, limits = TransitionLimits(renderVisits = 1_000)).report
+        assertEquals(1, enough.records("transitions").size)
+        assertEquals(1_000, enough["limits"].record()["renderVisits"])
+        val lowEvent = TransitionAnalysis.create(input, limits = TransitionLimits(renderVisits = 1_000, eventVisits = 1)).report
+        assertTrue(lowEvent.records("triggers").isNotEmpty())
+        assertTrue(lowEvent.records("transitions").isEmpty())
+        assertTrue(lowEvent.records("diagnostics").any { it["code"] == "CONTROL_FLOW_VISIT_LIMIT" && it.string("detail").startsWith("TRIGGER:") })
+        assertThrows(IllegalArgumentException::class.java) { TransitionLimits(renderVisits = 0) }
     }
     @Test fun `independent rendering branch does not constrain the following button`() {
         val base = fixture()
@@ -125,7 +320,7 @@ class TransitionAnalysisTest {
         val stack = record("kind" to "STACK", "identity" to "stack", "initial" to listOf(constant("home")))
         val ordinary = record("kind" to "LIST_VALUE", "identity" to "ordinary", "items" to emptyList<Record>())
         val receiver = argument("this", if (list) ordinary else stack, "DispatchReceiver")
-        return record("schemaVersion" to 1, "factsCapabilities" to listOf("CONTROL_FLOW_IR_V1", "PARAMETER_DEFAULTS_V1", "ASSIGNMENTS_V1", "EXPRESSION_CONTROL_FLOW_V1"),
+        return record("schemaVersion" to 1, "factsCapabilities" to listOf("CONTROL_FLOW_IR_V1", "PARAMETER_DEFAULTS_V1", "ASSIGNMENTS_V1", "EXPRESSION_CONTROL_FLOW_V1", "SUPER_CALL_TARGETS_V1"),
             "functions" to listOf("Home", "Detail", "Action").map { record("symbol" to it, "parameters" to emptyList<Record>()) },
             "functionBodies" to listOf(body("Home", listOf(statement("button"))), body("Detail", emptyList()), body("Action", action)),
             "callRelations" to listOf(

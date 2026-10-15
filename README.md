@@ -14,6 +14,7 @@ Gradle/K2 IR 플러그인으로 Composable과 Nav3 entry·content 관계를 수�
 - [AI 없는 화면 연결·접근 경로 설계](docs/12-transition-and-access-path-design.md)
 - [로컬 실행과 외부 전송 차단 설계](docs/13-local-analysis-security.md)
 - [전환 분석·격리 runner 구현과 검증](docs/14-offline-transitions-implementation.md)
+- [접근 경로 발견 범위 개선과 룰업 95.83% 검증](docs/15-access-path-coverage.md)
 - [설계 문서 목차](docs/README.md)
 - [제품 요구사항과 확정된 화면 구성](docs/01-product-requirements.md)
 - [시스템 구조](docs/02-system-architecture.md)

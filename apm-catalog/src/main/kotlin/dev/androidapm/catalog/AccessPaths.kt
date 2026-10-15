@@ -3,10 +3,13 @@ package dev.androidapm.catalog
 /** Finite, path-sensitive stack exploration. A missing path never proves unreachability. */
 object AccessPaths {
     fun find(transitions: Record, entries: Record, query: Record = emptyMap()): Record {
+        require(transitions["diagnosticOnly"] != true) { "DIAGNOSTIC_SNAPSHOT_NOT_ACCESS_EVIDENCE" }
         require(transitions["schemaVersion"] == entries["schemaVersion"]) { "INCOMPATIBLE_ACCESS_INPUTS" }
         require(transitions["catalogFingerprint"] == entries["catalogFingerprint"]) { "ACCESS_INPUT_PROVENANCE_MISMATCH" }
         val contexts = transitions.records("contexts")
         val edges = transitions.records("transitions")
+        val externalEntries = entries.records("entries").associateBy { it.string("id") }
+        val externalInputs = externalEntries.mapValues { ExternalIntents.candidates(it.value).toSet() }
         val outgoing = edges.withIndex().flatMap { (index, edge) -> edge.strings("originContextRefs").map { it to index } }
             .groupBy({ it.first }, { it.second })
         val effects = transitions.records("effects").associateBy { it.string("id") }
@@ -17,7 +20,18 @@ object AccessPaths {
         val targets = query.strings("targetContextRefs").ifEmpty { contexts.map { it.string("id") } }.toSet()
         require(targets.all { id -> contexts.any { it["id"] == id } }) { "UNKNOWN_TARGET_CONTEXT" }
         val checks = GuardChecks()
-        val queue = ArrayDeque<State>()
+        // Share the exploration budget between visible destinations. A high-fanout
+        // screen must not exhaust it before a low-fanout screen gets one turn.
+        val queues = linkedMapOf<String, ArrayDeque<State>>()
+        val expansions = mutableMapOf<String, Int>()
+        val visibility = mutableMapOf<Pair<String, Record>, List<Record>>()
+        fun visible(state: State): List<Record> = visibility.getOrPut(state.host to state.stack.lastOrNull().orEmpty()) {
+            contexts.filter { it["definitionStatus"] != "UNRESOLVED_RENDER" && it["hostRef"] == state.host && it.records("keyPatterns").any { pattern -> TransitionAnalysis.keyMatches(pattern, state.stack.lastOrNull().orEmpty()) } }
+        }
+        fun enqueue(state: State) {
+            val bucket = state.host + ":" + visible(state).joinToString(",") { it.string("id") }
+            queues.getOrPut(bucket) { ArrayDeque() }.add(state)
+        }
         val paths = mutableListOf<Record>()
         val frontier = linkedMapOf<String, Record>()
         fun unresolved(code: String, value: String) { frontier.putIfAbsent("$code:$value", record("code" to code, "subjectRef" to value)) }
@@ -26,32 +40,34 @@ object AccessPaths {
                 val initial = transitions.records("initialStacks").singleOrNull { it["hostRef"] == host }
                 if (initial?.get("status") == "STRUCTURAL") {
                     val keys = initial.records("initialKeys")
-                    if (keys.isNotEmpty() && !checks.contradictory(initial.records("guards"))) queue.add(State(entry.string("id"), host, keys.takeLast(suffixLimit), keys.size > suffixLimit, initial.records("guards")))
+                    if (keys.isNotEmpty() && !checks.contradictory(initial.records("guards"))) enqueue(State(entry.string("id"), host, keys.takeLast(suffixLimit), keys.size > suffixLimit, initial.records("guards")))
                     else unresolved("INITIAL_STACK_EMPTY_OR_UNKNOWN", host)
                 } else unresolved("INITIAL_STACK_UNRESOLVED", host)
             }
         }
-        if (queue.isEmpty()) unresolved("NO_PROVEN_LAUNCHER_TO_HOST_BINDING", "")
+        if (queues.isEmpty()) unresolved("NO_PROVEN_LAUNCHER_TO_HOST_BINDING", "")
         val visited = mutableMapOf<String, Int>()
         val counts = mutableMapOf<String, Int>()
         var explored = 0
         var truncated = false
-        while (queue.isNotEmpty()) {
+        while (queues.values.any { it.isNotEmpty() }) {
             if (explored++ >= maxStates) { truncated = true; unresolved("STATE_BUDGET_EXCEEDED", ""); break }
-            val state = queue.removeFirst()
+            val bucket = queues.entries.filter { it.value.isNotEmpty() }.minWith(compareBy({ expansions[it.key] ?: 0 }, { it.value.first().steps.size }, { it.key }))
+            expansions[bucket.key] = (expansions[bucket.key] ?: 0) + 1
+            val state = bucket.value.removeFirst()
             val key = fingerprint(record("entry" to state.entry, "host" to state.host, "stack" to state.stack, "prefix" to state.unknownPrefix,
-                "constraints" to state.guards, "version" to state.version))
+                "constraints" to state.guards.map { fingerprint(it) }.distinct().sorted(), "version" to state.version, "externalEntries" to state.externalEntries))
             val seenCount = visited[key] ?: 0
             if (seenCount >= maxPaths) continue
             visited[key] = seenCount + 1
-            val visible = contexts.filter { it["definitionStatus"] != "UNRESOLVED_RENDER" && it["hostRef"] == state.host && it.records("keyPatterns").any { pattern -> TransitionAnalysis.keyMatches(pattern, state.stack.lastOrNull().orEmpty()) } }
+            val visible = visible(state)
             if (visible.isEmpty()) { unresolved("VISIBLE_DESTINATION_UNRESOLVED", key); continue }
             visible.filter { it.string("id") in targets }.forEach { target ->
                 val id = target.string("id")
                 if ((counts[id] ?: 0) < maxPaths) {
                     counts[id] = (counts[id] ?: 0) + 1
                     paths += record("id" to "path:" + fingerprint(record("entry" to state.entry, "target" to id, "steps" to state.steps)),
-                        "entryRef" to state.entry, "targetContextRef" to id, "steps" to state.steps, "initialOrRestored" to state.steps.isEmpty(),
+                        "entryRef" to state.entry, "externalEntryRefs" to state.externalEntries, "accessKind" to if (state.externalEntries.isEmpty()) "LAUNCHER" else "LAUNCHER_THEN_WARM_EXTERNAL_INTENT", "targetContextRef" to id, "steps" to state.steps, "initialOrRestored" to state.steps.isEmpty(),
                         "stack" to state.stack, "unknownPrefix" to state.unknownPrefix, "guards" to state.guards,
                         "feasibility" to if (state.guards.isEmpty()) "NO_KNOWN_CONTRADICTION" else "UNKNOWN",
                         "observation" to "NOT_OBSERVED", "stateVersion" to state.version)
@@ -60,7 +76,19 @@ object AccessPaths {
             val next = visible.flatMap { outgoing[it.string("id")].orEmpty() }.distinct().sorted().map { edges[it] }
             if (state.steps.size >= maxDepth) { if (next.isNotEmpty()) { truncated = true; unresolved("DEPTH_BUDGET_EXCEEDED", key) }; continue }
             for (edge in next) {
+                val external = edge.string("externalEntryRef")
+                if (external.isNotEmpty()) {
+                    if (query["includeExternalIntents"] == false) continue
+                    if (state.host !in externalEntries[external]?.strings("hostRefs").orEmpty() || edge["externalInput"].record() !in externalInputs[external].orEmpty()) {
+                        unresolved("EXTERNAL_ENTRY_UNPROVEN", edge.string("id")); continue
+                    }
+                }
                 if (edge["linkage"] == "UNRESOLVED") { unresolved("UNRESOLVED_TRANSITION", edge.string("id")); continue }
+                // A prefix of a stopped handler is not a completed stack plan.
+                // Later, unmodeled effects may clear or replace that destination.
+                if (edge["completion"] !in setOf("NORMAL_IN_MODELED_FLOW", "RETURN")) {
+                    unresolved("INCOMPLETE_TRANSITION", edge.string("id")); continue
+                }
                 // Mutable-state predicates are versioned after state effects; input predicates remain correlated.
                 val guards = state.guards + edge.records("guards").map { guard ->
                     if (guard["mutableState"] == true) guard + record("version" to state.version) else guard
@@ -90,10 +118,11 @@ object AccessPaths {
                     }
                     if (stack.size > suffixLimit) { stack = stack.takeLast(suffixLimit); unknownPrefix = true }
                 }
-                if (valid) queue.add(State(state.entry, state.host, stack, unknownPrefix, guards.distinct(), state.steps + edge.string("id"), version))
+                if (valid) enqueue(State(state.entry, state.host, stack, unknownPrefix, guards.distinct(), state.steps + edge.string("id"), version,
+                    if (external.isEmpty()) state.externalEntries else (state.externalEntries + external).distinct()))
             }
         }
-        return record("schemaVersion" to 1, "rulesVersion" to "access-v1", "aiMode" to "DISABLED", "catalogFingerprint" to transitions["catalogFingerprint"],
+        return record("schemaVersion" to 1, "rulesVersion" to "access-v3", "searchOrder" to "FAIR_DESTINATION_EXPANSION", "aiMode" to "DISABLED", "catalogFingerprint" to transitions["catalogFingerprint"],
             "transitionFingerprint" to fingerprint(transitions), "query" to query, "paths" to paths.sortedWith(compareBy({ it.string("targetContextRef") }, { it.strings("steps").size }, { it.string("id") })),
             "targets" to targets.sorted().map { record("contextRef" to it, "status" to if ((counts[it] ?: 0) > 0) "PATH_FOUND_IN_STATIC_MODEL" else "NO_PATH_FOUND_IN_EXPLORED_MODEL") },
             "frontier" to frontier.values.toList(), "inputCoverage" to transitions["coverage"],
@@ -102,15 +131,32 @@ object AccessPaths {
             "exploredStates" to explored, "limitations" to listOf("STATIC_PATH_IS_NOT_RUNTIME_ACCESS", "EXTERNAL_PRECONDITIONS_UNVERIFIED", "RESTORATION_AND_ASYNC_STATE_REQUIRE_EXPLICIT_INPUTS"))
     }
     private data class State(val entry: String, val host: String, val stack: List<Record>, val unknownPrefix: Boolean,
-        val guards: List<Record> = emptyList(), val steps: List<String> = emptyList(), val version: Int = 0)
+        val guards: List<Record> = emptyList(), val steps: List<String> = emptyList(), val version: Int = 0, val externalEntries: List<String> = emptyList())
     private fun limit(query: Record, key: String, default: Int, maximum: Int): Int = ((query[key] as? Number)?.toInt() ?: default).also { require(it in 1..maximum) { "INVALID_ACCESS_LIMIT:$key" } }
     internal fun contradictory(guards: List<Record>): Boolean = GuardChecks().contradictory(guards)
 
+    /** Only an operand statically typed as this enum uses Enum's final equality.
+     * Any/custom-equals operands are deliberately outside this domain rule. */
+    internal fun enumConstraint(test: Record): Record? {
+        if (test["kind"] == "PREDICATE_REF") return test["enumConstraint"].record().takeIf { it.isNotEmpty() }
+        if (test["kind"] != "PREDICATE" || test["operation"] !in setOf("kotlin.internal.ir.EQEQ", "kotlin.internal.ir.EQEQEQ")) return null
+        val args = test.records("arguments")
+        if (args.size != 2) return null
+        val entry = args.singleOrNull { it["kind"] == "ENUM" && it.string("ref").contains('.') } ?: return null
+        val operand = args.single { it !== entry }
+        val type = entry.string("ref").substringBeforeLast('.')
+        if (operand["kind"] !in setOf("SYMBOLIC", "OPAQUE", "REFERENCE") || operand.string("type").removeSuffix("?") != type) return null
+        return record("operandRef" to fingerprint(operand), "enumType" to type, "entryRef" to entry["ref"])
+    }
+
     /** Report predicates are immutable. Cache only within one query, never across inputs. */
-    private class GuardChecks {
+    internal class GuardChecks {
         private val keys = java.util.IdentityHashMap<Record, String>()
+        private val enumConstraints = java.util.IdentityHashMap<Record, Record?>()
         fun contradictory(guards: List<Record>): Boolean {
             val expectedByKey = HashMap<Pair<String, String>, Any?>()
+            val equal = HashMap<Triple<String, String, String>, String>()
+            val unequal = HashMap<Triple<String, String, String>, MutableSet<String>>()
             for (guard in guards) {
                 var test = guard["test"].record()
                 var expected = guard["expected"]
@@ -120,7 +166,26 @@ object AccessPaths {
                     expected = expected != true
                 }
                 if (test["kind"] == "CONSTANT" && test["value"] is Boolean && test["value"] != expected) return true
-                val key = keys.getOrPut(test) { fingerprint(test) } to Json.encode(guard["version"])
+                val constraint = if (enumConstraints.containsKey(test)) enumConstraints[test] else enumConstraint(test).also {
+                    if (enumConstraints.size >= 20_000) enumConstraints.clear()
+                    enumConstraints[test] = it
+                }
+                if (constraint != null) {
+                    val domain = Triple(constraint.string("operandRef"), constraint.string("enumType"), Json.encode(guard["version"]))
+                    val entry = constraint.string("entryRef")
+                    if (expected == true) {
+                        if (equal[domain]?.let { it != entry } == true || entry in unequal[domain].orEmpty()) return true
+                        equal[domain] = entry
+                    } else {
+                        if (equal[domain] == entry) return true
+                        unequal.getOrPut(domain) { mutableSetOf() }.add(entry)
+                    }
+                }
+                val digest = keys[test] ?: fingerprint(test).also {
+                    if (keys.size >= 20_000) keys.clear()
+                    keys[test] = it
+                }
+                val key = digest to Json.encode(guard["version"])
                 if (expectedByKey.containsKey(key) && expectedByKey[key] != expected) return true
                 expectedByKey[key] = expected
             }

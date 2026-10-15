@@ -9,13 +9,40 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
     val returns = catalog.records("values").filter { "returnOf" in it }.groupBy { it.string("returnOf") }
     val bodies = catalog.records("functionBodies").associate { it.string("owner") to it["body"].record() }
     val classes = catalog.records("classes").associateBy { it.string("symbol") }
+    // Exact field symbols, with ambiguous ownership retained as unresolved.
+    // Index once instead of scanning every source class for each symbolic read.
+    private val fieldOwners = buildMap<String, Record?> {
+        classes.values.forEach { klass ->
+            klass.records("fields").mapNotNull { it["ref"] as? String }.distinct().forEach { ref ->
+                put(ref, if (containsKey(ref)) null else klass)
+            }
+        }
+    }
+    private val classFunctions = functions.values.groupBy { it.string("classOwner") }
+    private val classCaptures = mutableMapOf<String, Set<String>>()
+    private val implementations = mutableMapOf<Pair<String, String>, Record?>()
     val closures = mutableMapOf<String, Map<String, Record>>()
     private val captures = mutableMapOf<String, Set<String>>()
     val diagnostics = linkedMapOf<String, Record>()
     val injection = InjectionModel(this)
     private var evaluations = 0
     private var context = ""
-    private data class EvalKey(val expression: Record, val environment: Map<String, Record>, val depth: Int, val seen: Set<String>)
+    /** Values are immutable records; bindings may be filled incrementally. Cache
+     * the structural hash only after taking and checking a binding snapshot. */
+    private class Environment(val bindings: Map<String, Record>) {
+        private val hash = bindings.hashCode()
+        override fun hashCode() = hash
+        override fun equals(other: Any?) = this === other || other is Environment && hash == other.hash && bindings == other.bindings
+    }
+    private val environments = java.util.IdentityHashMap<Map<String, Record>, Environment>()
+    private fun snapshot(env: Map<String, Record>): Environment {
+        val old = environments[env]
+        if (old != null && old.bindings.size == env.size && env.all { (key, value) -> old.bindings[key] === value }) return old
+        if (environments.size >= 20_000) environments.clear()
+        return Environment(env.toMap()).also { environments[env] = it }
+    }
+    fun environmentKey(env: Map<String, Record>): Any = snapshot(env)
+    private data class EvalKey(val expression: Record, val environment: Environment, val depth: Int, val seen: Set<String>)
     private fun newMemo() = object : LinkedHashMap<EvalKey, Record>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<EvalKey, Record>?) = size > 20_000
     }
@@ -27,18 +54,19 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
         memo = newMemo()
         return try { block() } finally { evaluations = savedEvaluations; memo = savedMemo }
     }
-    private val environmentDigests = object : LinkedHashMap<Map<String, Record>, String>(256, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Map<String, Record>, String>?) = size > 20_000
+    private val environmentDigests = object : LinkedHashMap<Environment, String>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Environment, String>?) = size > 20_000
     }
     private val closureKeys = object : LinkedHashMap<Pair<String, Map<String, Record>>, String>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Pair<String, Map<String, Record>>, String>?) = size > 20_000
     }
-    private fun environmentDigest(env: Map<String, Record>): String =
-        environmentDigests.getOrPut(env.toMap()) { fingerprint(env) }
+    internal fun environmentDigest(env: Map<String, Record>): String =
+        environmentDigests.getOrPut(snapshot(env)) { fingerprint(env) }
     fun beginContext(ref: String) {
         context = ref
         evaluations = 0
         memo.clear()
+        environments.clear()
         environmentDigests.clear()
         closureKeys.clear()
     }
@@ -51,8 +79,33 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
         return record("kind" to "UNKNOWN", "reason" to reason, "originRef" to origin)
     }
     fun constant(value: Any?) = record("kind" to "CONSTANT", "value" to value)
+    private fun rawType(type: String): String = type.removeSuffix("?").let { if (it in classes) it else it.substringBefore('<') }
+    /** Resolve using exact override symbols and the proven receiver hierarchy. */
+    fun implementation(declared: Record, receiver: Record?, superQualified: Boolean = false): Record? {
+        if (superQualified || declared["overridable"] != true) return declared
+        if (receiver?.get("kind") != "INSTANCE") return null
+        val cacheKey = declared.string("symbol") to receiver.string("type")
+        if (implementations.containsKey(cacheKey)) return implementations[cacheKey]
+        val distances = linkedMapOf(rawType(receiver.string("type")) to 0)
+        val pending = ArrayDeque(distances.keys)
+        while (pending.isNotEmpty()) {
+            val type = pending.removeFirst()
+            classes[type]?.strings("superTypes").orEmpty().forEach { parent ->
+                val name = rawType(parent)
+                if (name !in distances) { distances[name] = distances.getValue(type) + 1; pending.add(name) }
+            }
+        }
+        val symbols = mutableSetOf(declared.string("symbol"))
+        var changed: Boolean
+        do { changed = false; functions.values.forEach { fn ->
+            if (fn.strings("overrideSymbols").any { it in symbols } && symbols.add(fn.string("symbol"))) changed = true
+        } } while (changed)
+        val candidates = functions.values.filter { it.string("symbol") in symbols && it.string("symbol") in bodies && it.string("classOwner") in distances }
+        val nearest = candidates.minOfOrNull { distances.getValue(it.string("classOwner")) }
+        return candidates.filter { distances[it.string("classOwner")] == nearest }.singleOrNull().also { implementations[cacheKey] = it }
+    }
     private fun standardEquality(actual: String, seen: Set<String> = emptySet()): Boolean {
-        val type = actual.removeSuffix("?").substringBefore('<')
+        val type = rawType(actual)
         if (type == "kotlin.Any" || type == "java.lang.Object") return true
         if (type in seen) return false
         val declaration = classes[type] ?: return false
@@ -60,7 +113,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
         return declaration.strings("superTypes").all { standardEquality(it, seen + type) }
     }
     private fun subtype(actual: String, tested: String, seen: Set<String> = emptySet()): Boolean? {
-        val type = actual.removeSuffix("?").substringBefore('<')
+        val type = rawType(actual)
         if (type == tested || tested == "kotlin.Any") return true
         if (type in seen) return null
         if (type in setOf("kotlin.Any", "java.lang.Object")) return false
@@ -70,7 +123,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
     }
     fun closure(ref: String, env: Map<String, Record>): Record {
         val used = captures.getOrPut(ref) { capturedReferences(ref) }
-        val captured = env.filterKeys { it in used || it in setOf("@context", "@allocationContext", "@receiver") || it.startsWith("@local:") }
+        val captured = env.filterKeys { it in used || it in setOf("@context", "@allocationContext", "@receiver", "@activityOwner") || it.startsWith("@local:") }
         val id = closureKeys.getOrPut(ref to captured) { fingerprint(record("ref" to ref, "environment" to captured)) }
         closures.putIfAbsent(id, captured)
         return record("kind" to "FUNCTION", "ref" to ref, "closureId" to id)
@@ -83,7 +136,12 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
             when (value) {
                 is Map<*, *> -> {
                     val item = value.record()
-                    if (item["kind"] == "REFERENCE") found += item.string("ref")
+                    if (item["kind"] == "REFERENCE") {
+                        val reference = item.string("ref")
+                        found += reference
+                        val alias = values[reference]
+                        if (alias?.get("storage") == "LOCAL" && alias["mutable"] != true && visited.add("value:" + reference)) scan(alias["value"], depth + 1)
+                    }
                     if (item["kind"] in setOf("CALL", "CONSTRUCTOR")) {
                         val call = item.string("callId")
                         if (visited.add("call:" + call)) scan(calls[call]?.get("arguments"), depth + 1)
@@ -117,10 +175,10 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
 
     fun eval(expr: Record, env: Map<String, Record> = emptyMap(), depth: Int = 0, seen: Set<String> = emptySet()): Record {
         if (expr["kind"] == "CONSTANT") return constant(expr["value"])
-        if (expr["kind"] in setOf("ENUM", "SYMBOLIC", "INSTANCE", "STACK", "STREAM", "LIST_VALUE", "MAP_VALUE", "UNKNOWN", "PREDICATE", "OPAQUE", "COMPOSITION_LOCAL", "PROVIDED_LOCAL", "PAIR", "TYPE")) return expr
+        if (expr["kind"] in setOf("ENUM", "SYMBOLIC", "INSTANCE", "STACK", "STREAM", "LIST_VALUE", "LIST_BUILDER", "MAP_VALUE", "UNKNOWN", "PREDICATE", "OPAQUE", "COMPOSITION_LOCAL", "PROVIDED_LOCAL", "PAIR", "TYPE", "RESULT_VALUE", "ACTIVITY_OWNER", "ACTIVITY_LAUNCHER", "INTENT", "URI")) return expr
         // Parameter binding fills a mutable map incrementally. A cache key must
         // retain the environment at evaluation time, not a later mutation.
-        val key = EvalKey(expr, env.toMap(), depth, seen)
+        val key = EvalKey(expr, snapshot(env), depth, seen)
         memo[key]?.let { return it }
         if (depth > 36 || ++evaluations > evaluationLimit) { truncated = true; return unknown("VALUE_BUDGET_EXCEEDED", context) }
         return evaluate(expr, env, depth, seen).also { memo[key] = it }
@@ -136,6 +194,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
             "OBJECT" -> record("kind" to "INSTANCE", "identity" to "object:" + expr.string("ref"), "type" to expr["ref"], "fields" to emptyMap<String, Record>())
             "REFERENCE" -> {
                 val ref = expr.string("ref")
+                if (ref == "androidx.activity.compose.LocalActivity") return record("kind" to "COMPOSITION_LOCAL", "identity" to ref)
                 env[ref] ?: env["@receiver"]?.takeIf { ref.endsWith("#param:<this>") } ?: if (ref in seen) unknown("CYCLIC_VALUE", ref) else {
                     val receiver = expr["receiver"].record().takeIf { it.isNotEmpty() }?.let(::next)
                     val field = receiver?.get("fields").record()[expr.string("property")]?.record()
@@ -160,6 +219,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                 env["@expression:" + expr.string("expressionId")]?.let { return it }
                 val bound = env.toMutableMap()
                 for (stmt in expr.records("statements")) {
+                    if (stmt["op"] == "DECLARATION" && stmt["elementType"] in setOf("IrClassImpl", "IrFunctionImpl", "IrSimpleFunctionImpl")) continue
                     if (stmt["op"] !in setOf("DECLARE", "WRITE")) return unknown("EXPRESSION_CONTROL_REQUIRES_INTERPRETER", expr.string("expressionId"))
                     bound[stmt.string("ref")] = eval(stmt["value"].record(), bound, depth + 1, seen)
                 }
@@ -196,23 +256,41 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                 if (key in seen) return unknown("RECURSIVE_VALUE", call.string("id"))
                 val args = call.records("arguments").associate { it.string("name") to eval(it["value"].record(), env, depth + 1, seen + key) }
                 val name = call.string("name")
+                ExternalIntents.value(name, args)?.let { return it }
                 when {
+                    name == "androidx.activity.compose.<get-LocalActivity>" -> record("kind" to "COMPOSITION_LOCAL", "identity" to "androidx.activity.compose.LocalActivity")
                     name in setOf("androidx.compose.runtime.compositionLocalOf", "androidx.compose.runtime.staticCompositionLocalOf") -> record("kind" to "COMPOSITION_LOCAL", "identity" to call["id"])
                     name in setOf("androidx.compose.runtime.ProvidableCompositionLocal.provides", "androidx.compose.runtime.ProvidableCompositionLocal.providesDefault") ->
                         record("kind" to "PROVIDED_LOCAL", "local" to args.values.firstOrNull(), "value" to args.values.lastOrNull())
                     name in setOf("androidx.compose.runtime.CompositionLocal.<get-current>", "androidx.compose.runtime.ProvidableCompositionLocal.<get-current>") -> {
                         val local = args.values.firstOrNull()
-                        env["@local:" + local?.get("identity")] ?: unknown("COMPOSITION_LOCAL_PROVIDER_UNRESOLVED", call.string("id"))
+                        env["@local:" + local?.get("identity")] ?: if (local?.get("identity") == "androidx.activity.compose.LocalActivity" && env.containsKey("@activityOwner")) env.getValue("@activityOwner")
+                        else unknown("COMPOSITION_LOCAL_PROVIDER_UNRESOLVED", call.string("id")) + record("compositionContextRef" to env["@context"]?.get("ref"), "local" to local)
                     }
-                    name in setOf("androidx.hilt.navigation.compose.hiltViewModel", "androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel") ->
-                        if (args.containsKey("viewModelStoreOwner") || args.containsKey("key")) unknown("CUSTOM_VIEWMODEL_OWNER_OR_KEY_NOT_MODELED", call.string("id"))
-                        else injection.instance(expr.string("type"), env["@context"]?.string("ref") ?: call.string("id"), viewModel = true)
+                    name in setOf("androidx.hilt.navigation.compose.hiltViewModel", "androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel") -> {
+                        val owner = args["viewModelStoreOwner"]
+                        val vmKey = args["key"] ?: constant(null)
+                        if (owner != null && owner["kind"] != "ACTIVITY_OWNER" || vmKey["kind"] != "CONSTANT" || vmKey["value"] != null && vmKey["value"] !is String)
+                            unknown("CUSTOM_VIEWMODEL_OWNER_OR_KEY_NOT_MODELED", call.string("id"))
+                        else injection.instance(expr.string("type"), (owner?.string("identity") ?: env["@context"]?.string("ref") ?: call.string("id")) + ":key:" + Json.encode(vmKey["value"]), viewModel = true)
+                    }
+                    name == "kotlin.runCatching" -> record("kind" to "RESULT_VALUE", "identity" to key, "value" to record("kind" to "SYMBOLIC", "ref" to "result:" + key))
+                    name in setOf("kotlin.onSuccess", "kotlin.onFailure") -> args.values.firstOrNull() ?: unknown("RESULT_RECEIVER_UNRESOLVED", call.string("id"))
+                    name == "androidx.activity.compose.rememberLauncherForActivityResult" -> {
+                        val callback = args["onResult"].orEmpty()
+                        if (callback["kind"] != "FUNCTION") unknown("ACTIVITY_RESULT_CALLBACK_UNRESOLVED", call.string("id")) else
+                            record("kind" to "ACTIVITY_LAUNCHER", "identity" to "launcher:" + key, "registrationRef" to call["id"], "callback" to callback, "contract" to args["contract"])
+                    }
                     call["constructor"] == true || expr["kind"] == "CONSTRUCTOR" -> {
                         val bound = bind(call, env, depth + 1)
                         val parameters = functions[call.string("target")]?.records("parameters").orEmpty()
                         val fields = if (parameters.isEmpty()) args else parameters.filter { it["kind"] == "Regular" || it["kind"] == "REGULAR" }.associate { it.string("name") to bound.getValue(it.string("ref")) }
+                        val type = (call["classOwner"] ?: expr["type"]).toString()
+                        val used = classCaptures.getOrPut(type) { classFunctions[type].orEmpty().flatMap { captures.getOrPut(it.string("symbol")) { capturedReferences(it.string("symbol")) } }.toSet() }
+                        val captured = env.filterKeys { it in used }
+                        val closure = if (captured.isEmpty()) null else environmentDigest(captured).also { closures.putIfAbsent(it, captured) }
                         record("kind" to "INSTANCE", "identity" to "allocation:" + key, "allocationRef" to call["id"],
-                            "type" to (call["classOwner"] ?: expr["type"]), "fields" to fields, "multiplicity" to "MAY_REPEAT")
+                            "type" to type, "fields" to fields, "environmentId" to closure, "multiplicity" to "MAY_REPEAT")
                     }
                     name.startsWith("androidx.compose.runtime.") && name.substringAfterLast('.') in setOf("remember", "rememberSaveable") -> {
                         val fn = args.values.lastOrNull { it["kind"] == "FUNCTION" }
@@ -220,6 +298,14 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                     }
                     name == "androidx.compose.runtime.mutableStateListOf" || name == "androidx.navigation3.runtime.rememberNavBackStack" ->
                         record("kind" to "STACK", "identity" to "stack:" + call.string("id") + ":" + env["@allocationContext"]?.string("ref").orEmpty(), "initial" to args.values.flatMap { if (it["kind"] == "LIST_VALUE") it.records("items") else listOf(it) })
+                    // These factories allocate a fresh mutable collection. A
+                    // field initializer belongs to its proven receiver object;
+                    // repeated reads of that field retain the same identity.
+                    name in setOf("kotlin.collections.mutableSetOf", "kotlin.collections.hashSetOf", "kotlin.collections.linkedSetOf") -> {
+                        val owner = env["@receiver"]?.takeIf { it["kind"] == "INSTANCE" }?.get("identity")
+                        record("kind" to "OPAQUE", "callId" to call["id"], "name" to name, "type" to expr["type"], "arguments" to args,
+                            "allocationIdentity" to if (owner != null) fingerprint(record("call" to call["id"], "owner" to owner)) else key)
+                    }
                     name in setOf("kotlin.collections.listOf", "kotlin.collections.mutableListOf", "kotlin.collections.arrayListOf", "kotlin.collections.setOf", "kotlin.arrayOf") ->
                         record("kind" to "LIST_VALUE", "identity" to "list:" + key, "items" to args.values.flatMap { if (it["kind"] == "LIST_VALUE") it.records("items") else listOf(it) })
                     name == "kotlin.collections.emptyList" -> record("kind" to "LIST_VALUE", "items" to emptyList<Record>())
@@ -245,14 +331,22 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                         if (map?.get("kind") == "MAP_VALUE" && index?.get("kind") == "CONSTANT") map.records("entries").lastOrNull { it["key"] == index }?.get("value").record().ifEmpty { constant(null) }
                         else unknown("MAP_LOOKUP_UNRESOLVED", call.string("id"))
                     }
-                    name == "kotlinx.coroutines.channels.Channel" -> record("kind" to "STREAM", "identity" to "channel:" + call.string("id") + ":" + (env["@receiver"]?.get("identity") ?: env["@allocationContext"]?.get("ref") ?: env["@context"]?.get("ref") ?: "OWNER_UNRESOLVED"),
-                        "streamKind" to "CHANNEL", "ownerProven" to (env["@receiver"]?.get("identity") != null || env.containsKey("@context")), "allocationRef" to call["id"])
+                    name == "kotlinx.coroutines.channels.Channel" -> {
+                        val receiver = env["@receiver"]
+                        val owner = if (receiver == null) env["@allocationContext"]?.get("ref") ?: env["@context"]?.get("ref")
+                            else receiver.takeIf { it["kind"] == "INSTANCE" }?.get("identity")
+                        record("kind" to "STREAM", "identity" to "channel:" + call.string("id") + ":" + (owner ?: "OWNER_UNRESOLVED"),
+                            "streamKind" to "CHANNEL", "ownerProven" to (owner != null), "allocationRef" to call["id"])
+                    }
                     name == "kotlinx.coroutines.flow.receiveAsFlow" -> args.values.firstOrNull()?.takeIf { it["kind"] == "STREAM" }
                         ?.plus(record("adapter" to "receiveAsFlow")) ?: unknown("STREAM_IDENTITY_UNRESOLVED", call.string("id"))
                     name in setOf("kotlin.internal.ir.EQEQ", "kotlin.internal.ir.EQEQEQ", "kotlin.Boolean.not") -> {
                         val list = args.values.toList()
                         if (list.all { it["kind"] == "CONSTANT" }) constant(if (name.endsWith(".not")) list.first()["value"] != true else list.getOrNull(0)?.get("value") == list.getOrNull(1)?.get("value"))
-                        else if (!name.endsWith(".not") && list.size == 2 && list.any { it == constant(null) } && list.any { it["kind"] in setOf("INSTANCE", "FUNCTION", "STACK", "STREAM", "MAP_VALUE", "LIST_VALUE") }) constant(false)
+                        // Enum.equals is final; two concrete enum entries have
+                        // equality exactly when their declaration symbols agree.
+                        else if (!name.endsWith(".not") && list.size == 2 && list.all { it["kind"] == "ENUM" && it.string("ref").isNotEmpty() }) constant(list[0]["ref"] == list[1]["ref"])
+                        else if (!name.endsWith(".not") && list.size == 2 && list.any { it == constant(null) } && list.any { it["kind"] in setOf("INSTANCE", "FUNCTION", "STACK", "STREAM", "MAP_VALUE", "LIST_VALUE", "INTENT", "URI") }) constant(false)
                         else if (!name.endsWith(".not") && list.size == 2 && list.all { it["kind"] == "INSTANCE" && it.string("identity").startsWith("object:") } &&
                             (name.endsWith(".EQEQEQ") || standardEquality(list[0].string("type")))) constant(list[0]["identity"] == list[1]["identity"])
                         // Source hierarchies without custom equals use identity or
@@ -261,14 +355,13 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                             (name.endsWith(".EQEQEQ") || standardEquality(list[0].string("type")))) constant(false)
                         else record("kind" to "PREDICATE", "operation" to name, "arguments" to list)
                     }
-                    name.endsWith(".invoke") -> args.values.firstOrNull { it["kind"] == "FUNCTION" }?.let { returned(it, args.values.drop(1), depth + 1) }
+                    name.endsWith(".invoke") && (args.values.firstOrNull()?.get("kind") == "FUNCTION" || name.startsWith("kotlin.Function") || name.startsWith("kotlin.coroutines.SuspendFunction")) -> args.values.firstOrNull { it["kind"] == "FUNCTION" }?.let { returned(it, args.values.drop(1), depth + 1) }
                         ?: unknown("CALLBACK_UNRESOLVED", call.string("id"))
                     call.string("target") in functions -> {
                         val declared = functions.getValue(call.string("target"))
                         val receiver = args.values.firstOrNull()
-                        val implementations = functions.values.filter { it["classOwner"] == receiver?.get("type") && (it["symbol"] == declared["symbol"] || declared["symbol"] in it.strings("overrideSymbols")) && it.string("symbol") in bodies }
-                        val fn = if (declared["overridable"] == true && receiver?.get("kind") == "INSTANCE") implementations.singleOrNull() ?: declared else declared
-                        if (fn["overridable"] == true && (receiver?.get("kind") != "INSTANCE" || fn["classOwner"] != receiver["type"])) unknown("VIRTUAL_RETURN_UNRESOLVED", call.string("id"))
+                        val fn = implementation(declared, receiver, call["superQualified"] == true)
+                        if (fn == null) unknown("VIRTUAL_RETURN_UNRESOLVED", call.string("id"))
                         else {
                             val candidates = returns[fn.string("symbol")].orEmpty()
                             val bound = bind(call, env, depth + 1) + fn.records("parameters").mapIndexedNotNull { index, p ->
@@ -278,7 +371,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                             if (resolved.size == 1 && candidates.all { it.records("conditions").isEmpty() }) resolved.single() else unknown("RETURN_ALTERNATIVES_UNRESOLVED", call.string("id"))
                         }
                     }
-                    else -> record("kind" to "OPAQUE", "callId" to call["id"], "name" to name, "type" to expr["type"])
+                    else -> record("kind" to "OPAQUE", "callId" to call["id"], "name" to name, "type" to expr["type"], "arguments" to args)
                 }
             }
             else -> unknown(expr.string("expressionType").ifEmpty { "EXPRESSION_UNMODELED" })
@@ -294,7 +387,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
         return eval(candidates.single()["value"].record(), env, depth + 1)
     }
     private fun injectedField(ref: String, env: Map<String, Record>): Record? {
-        val klass = classes.values.singleOrNull { c -> c.records("fields").any { it["ref"] == ref } } ?: return null
+        val klass = fieldOwners[ref] ?: return null
         if (klass.records("annotations").none { it["name"] == "dagger.hilt.android.AndroidEntryPoint" }) return null
         val field = klass.records("fields").single { it["ref"] == ref }
         if (field.records("annotations").none { it["name"] == "javax.inject.Inject" }) return null
