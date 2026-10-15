@@ -17,7 +17,18 @@ object AccessPaths {
         val targets = query.strings("targetContextRefs").ifEmpty { contexts.map { it.string("id") } }.toSet()
         require(targets.all { id -> contexts.any { it["id"] == id } }) { "UNKNOWN_TARGET_CONTEXT" }
         val checks = GuardChecks()
-        val queue = ArrayDeque<State>()
+        // Share the exploration budget between visible destinations. A high-fanout
+        // screen must not exhaust it before a low-fanout screen gets one turn.
+        val queues = linkedMapOf<String, ArrayDeque<State>>()
+        val expansions = mutableMapOf<String, Int>()
+        val visibility = mutableMapOf<Pair<String, Record>, List<Record>>()
+        fun visible(state: State): List<Record> = visibility.getOrPut(state.host to state.stack.lastOrNull().orEmpty()) {
+            contexts.filter { it["definitionStatus"] != "UNRESOLVED_RENDER" && it["hostRef"] == state.host && it.records("keyPatterns").any { pattern -> TransitionAnalysis.keyMatches(pattern, state.stack.lastOrNull().orEmpty()) } }
+        }
+        fun enqueue(state: State) {
+            val bucket = state.host + ":" + visible(state).joinToString(",") { it.string("id") }
+            queues.getOrPut(bucket) { ArrayDeque() }.add(state)
+        }
         val paths = mutableListOf<Record>()
         val frontier = linkedMapOf<String, Record>()
         fun unresolved(code: String, value: String) { frontier.putIfAbsent("$code:$value", record("code" to code, "subjectRef" to value)) }
@@ -26,25 +37,27 @@ object AccessPaths {
                 val initial = transitions.records("initialStacks").singleOrNull { it["hostRef"] == host }
                 if (initial?.get("status") == "STRUCTURAL") {
                     val keys = initial.records("initialKeys")
-                    if (keys.isNotEmpty() && !checks.contradictory(initial.records("guards"))) queue.add(State(entry.string("id"), host, keys.takeLast(suffixLimit), keys.size > suffixLimit, initial.records("guards")))
+                    if (keys.isNotEmpty() && !checks.contradictory(initial.records("guards"))) enqueue(State(entry.string("id"), host, keys.takeLast(suffixLimit), keys.size > suffixLimit, initial.records("guards")))
                     else unresolved("INITIAL_STACK_EMPTY_OR_UNKNOWN", host)
                 } else unresolved("INITIAL_STACK_UNRESOLVED", host)
             }
         }
-        if (queue.isEmpty()) unresolved("NO_PROVEN_LAUNCHER_TO_HOST_BINDING", "")
+        if (queues.isEmpty()) unresolved("NO_PROVEN_LAUNCHER_TO_HOST_BINDING", "")
         val visited = mutableMapOf<String, Int>()
         val counts = mutableMapOf<String, Int>()
         var explored = 0
         var truncated = false
-        while (queue.isNotEmpty()) {
+        while (queues.values.any { it.isNotEmpty() }) {
             if (explored++ >= maxStates) { truncated = true; unresolved("STATE_BUDGET_EXCEEDED", ""); break }
-            val state = queue.removeFirst()
+            val bucket = queues.entries.filter { it.value.isNotEmpty() }.minWith(compareBy({ expansions[it.key] ?: 0 }, { it.value.first().steps.size }, { it.key }))
+            expansions[bucket.key] = (expansions[bucket.key] ?: 0) + 1
+            val state = bucket.value.removeFirst()
             val key = fingerprint(record("entry" to state.entry, "host" to state.host, "stack" to state.stack, "prefix" to state.unknownPrefix,
-                "constraints" to state.guards, "version" to state.version))
+                "constraints" to state.guards.map { fingerprint(it) }.distinct().sorted(), "version" to state.version))
             val seenCount = visited[key] ?: 0
             if (seenCount >= maxPaths) continue
             visited[key] = seenCount + 1
-            val visible = contexts.filter { it["definitionStatus"] != "UNRESOLVED_RENDER" && it["hostRef"] == state.host && it.records("keyPatterns").any { pattern -> TransitionAnalysis.keyMatches(pattern, state.stack.lastOrNull().orEmpty()) } }
+            val visible = visible(state)
             if (visible.isEmpty()) { unresolved("VISIBLE_DESTINATION_UNRESOLVED", key); continue }
             visible.filter { it.string("id") in targets }.forEach { target ->
                 val id = target.string("id")
@@ -90,10 +103,10 @@ object AccessPaths {
                     }
                     if (stack.size > suffixLimit) { stack = stack.takeLast(suffixLimit); unknownPrefix = true }
                 }
-                if (valid) queue.add(State(state.entry, state.host, stack, unknownPrefix, guards.distinct(), state.steps + edge.string("id"), version))
+                if (valid) enqueue(State(state.entry, state.host, stack, unknownPrefix, guards.distinct(), state.steps + edge.string("id"), version))
             }
         }
-        return record("schemaVersion" to 1, "rulesVersion" to "access-v1", "aiMode" to "DISABLED", "catalogFingerprint" to transitions["catalogFingerprint"],
+        return record("schemaVersion" to 1, "rulesVersion" to "access-v2", "searchOrder" to "FAIR_DESTINATION_EXPANSION", "aiMode" to "DISABLED", "catalogFingerprint" to transitions["catalogFingerprint"],
             "transitionFingerprint" to fingerprint(transitions), "query" to query, "paths" to paths.sortedWith(compareBy({ it.string("targetContextRef") }, { it.strings("steps").size }, { it.string("id") })),
             "targets" to targets.sorted().map { record("contextRef" to it, "status" to if ((counts[it] ?: 0) > 0) "PATH_FOUND_IN_STATIC_MODEL" else "NO_PATH_FOUND_IN_EXPLORED_MODEL") },
             "frontier" to frontier.values.toList(), "inputCoverage" to transitions["coverage"],

@@ -20,6 +20,7 @@
 | [12. AI 없는 전환·접근 경로 상세 설계](12-transition-and-access-path-design.md) | K2 IR·SootUp/Heros 역할, 추가 수집, 객체·DI·이벤트·상태 연결, 조건부 경로 탐색, 선택적 바이너리 분석, 반례·인수 기준 |
 | [13. 로컬 분석과 외부 전송 차단](13-local-analysis-security.md) | AI 미사용, 고객 통제 경계, 도구 사전 준비, 격리 runner, Gradle·캐시·CI·로그·viewer·디바이스의 전송 차단, 실패 정책·비전송 시험 |
 | [14. 전환·격리 구현과 검증](14-offline-transitions-implementation.md) | 구현 책임과 선택 이유, 실제 파이프라인, 실행 명령, 반례·샘플·룰업 검증, 미지원 capability |
+| [15. 접근 경로 발견 범위 개선](15-access-path-coverage.md) | 95% 인수 기준, 상속·callback·비동기 전달 손실, 탐색 예산, 오연결 반례 |
 
 ## 결정 상태
 

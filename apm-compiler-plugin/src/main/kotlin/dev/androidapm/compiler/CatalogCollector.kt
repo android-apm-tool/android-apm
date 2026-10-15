@@ -157,7 +157,7 @@ internal class CatalogCollector(
         }
         val catalog = record(
             "schemaVersion" to 1, "moduleId" to module, "variant" to variant,
-            "factsCapabilities" to listOf("PARAMETER_DEFAULTS_V1", "CLASS_METADATA_V1", "ASSIGNMENTS_V1", "EXPLICIT_ARGUMENT_POSITIONS_V1", "CONTROL_FLOW_IR_V1", "EXPRESSION_CONTROL_FLOW_V1"),
+            "factsCapabilities" to listOf("PARAMETER_DEFAULTS_V1", "CLASS_METADATA_V1", "ASSIGNMENTS_V1", "EXPLICIT_ARGUMENT_POSITIONS_V1", "CONTROL_FLOW_IR_V1", "EXPRESSION_CONTROL_FLOW_V1", "INHERITED_CALL_TARGETS_V1"),
             "collectionStatus" to "COMPLETE_FOR_DECLARED_INPUTS",
             "scope" to record("files" to files, "mode" to "FULL_COMPILATION", "adapter" to "nav3-runtime-1.0.1-1.1.2-v1"),
             "functions" to functions.values.sortedBy { it.string("symbol") },
@@ -322,10 +322,24 @@ internal class CatalogCollector(
     private fun typeFact(type: IrType?): Record = record("kind" to "TYPE", "type" to type?.render(),
         "typeParameter" to ((type as? IrSimpleType)?.classifier?.owner as? IrTypeParameter)?.let(::typeParameterSymbol))
 
-    private fun symbol(declaration: IrDeclaration): String = when (declaration) {
-        is IrValueParameter -> ((declaration.parent as? IrDeclaration)?.let(::symbol) ?: owner) + "#param:" + declaration.name.asString()
+    /** Kotlin fake overrides have no body. Only a unique IR-declared ancestor
+     * may supply the symbol; overloads and ambiguous diamonds stay unresolved. */
+    private fun inheritedDeclaration(function: IrFunction, seen: Set<IrFunction> = emptySet()): IrFunction {
+        if (function !is IrSimpleFunction || !function.isFakeOverride || function in seen) return function
+        val targets = function.overriddenSymbols.map { inheritedDeclaration(it.owner, seen + function) }.distinct()
+        return targets.singleOrNull() ?: function
+    }
+    private fun symbol(declaration: IrDeclaration): String { return when (declaration) {
+        is IrValueParameter -> {
+            val parent = declaration.parent as? IrFunction
+            val target = parent?.let(::inheritedDeclaration)
+            val parameter = if (target != null && target !== parent) target.parameters.getOrNull(parent.parameters.indexOf(declaration)) ?: declaration else declaration
+            ((parameter.parent as? IrDeclaration)?.let(::symbol) ?: owner) + "#param:" + parameter.name.asString()
+        }
         is IrClass -> declaration.fqNameWhenAvailable?.asString() ?: "$module:${relative(file.fileEntry.name)}@${declaration.startOffset}:class"
         is IrFunction -> {
+            val inherited = inheritedDeclaration(declaration)
+            if (inherited !== declaration) return symbol(inherited)
             val name = declaration.fqNameWhenAvailable?.asString()
             // Accessors have special names too, but public/member accessors are
             // declarations shared across modules, not source-local lambdas.
@@ -344,7 +358,7 @@ internal class CatalogCollector(
             else declaration.fqNameWhenAvailable?.asString() ?: "$module:${relative(file.fileEntry.name)}@${declaration.startOffset}:field"
         is IrVariable -> "${(declaration.parent as? IrFunction)?.let(::symbol) ?: module}#local:${declaration.name}@${declaration.startOffset}"
         else -> "$module:${relative(file.fileEntry.name)}@${declaration.startOffset}"
-    }
+    } }
 
     private fun relative(path: String): String = File(path).absoluteFile.toPath().normalize()
         .let { root.absoluteFile.toPath().normalize().relativize(it).toString().replace('\\', '/') }

@@ -12,6 +12,36 @@ import java.nio.file.Path
 import kotlin.io.path.*
 
 class CatalogCollectorTest {
+    @Test fun `inherited generic methods and getters retain their declaring symbols and argument bindings`() {
+        val catalog = compile("""
+            object Home
+            object Detail
+            open class Parent<T>(val value: T) {
+                fun relay(action: (T) -> Unit) { action(value) }
+                open fun destination(): Any = Detail
+            }
+            class Child : Parent<Any>(Detail)
+            @Composable fun App() {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                val child = Child()
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> { androidx.compose.material3.Button(onClick = { child.relay { stack.add(child.destination()) } }) }
+                    entry<Detail> {}
+                })
+            }
+        """.trimIndent())
+        assertTrue(catalog.strings("factsCapabilities").contains("INHERITED_CALL_TARGETS_V1"))
+        val functions = catalog.records("functions").associateBy { it.string("symbol") }
+        val inherited = catalog.records("callRelations").filter { it.string("name") in setOf("fixture.Child.relay", "fixture.Child.destination") }
+        assertEquals(2, inherited.size)
+        inherited.forEach { call ->
+            val declared = functions.getValue(call.string("target"))
+            assertEquals("fixture.Parent", declared["classOwner"])
+            assertTrue(call.records("arguments").all { arg -> declared.records("parameters").any { it["ref"] == arg["parameter"] } })
+        }
+        val report = TransitionAnalysis.create(catalog).report
+        assertTrue(report.records("transitions").any { it.strings("targetContextRefs").isNotEmpty() }, Json.encode(report))
+    }
     @Test fun `Elvis returns and throws inside arguments preserve expression control flow`() {
         for ((argument, throwing) in listOf("null" to false, "\"present\"" to false, "null" to true)) {
             val exit = if (throwing) "throw IllegalStateException()" else "return Detail"
