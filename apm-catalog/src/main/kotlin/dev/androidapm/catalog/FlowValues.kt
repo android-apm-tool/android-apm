@@ -265,7 +265,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                     name in setOf("androidx.compose.runtime.CompositionLocal.<get-current>", "androidx.compose.runtime.ProvidableCompositionLocal.<get-current>") -> {
                         val local = args.values.firstOrNull()
                         env["@local:" + local?.get("identity")] ?: if (local?.get("identity") == "androidx.activity.compose.LocalActivity" && env.containsKey("@activityOwner")) env.getValue("@activityOwner")
-                        else unknown("COMPOSITION_LOCAL_PROVIDER_UNRESOLVED", call.string("id"))
+                        else unknown("COMPOSITION_LOCAL_PROVIDER_UNRESOLVED", call.string("id")) + record("compositionContextRef" to env["@context"]?.get("ref"), "local" to local)
                     }
                     name in setOf("androidx.hilt.navigation.compose.hiltViewModel", "androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel") -> {
                         val owner = args["viewModelStoreOwner"]
@@ -298,6 +298,14 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                     }
                     name == "androidx.compose.runtime.mutableStateListOf" || name == "androidx.navigation3.runtime.rememberNavBackStack" ->
                         record("kind" to "STACK", "identity" to "stack:" + call.string("id") + ":" + env["@allocationContext"]?.string("ref").orEmpty(), "initial" to args.values.flatMap { if (it["kind"] == "LIST_VALUE") it.records("items") else listOf(it) })
+                    // These factories allocate a fresh mutable collection. A
+                    // field initializer belongs to its proven receiver object;
+                    // repeated reads of that field retain the same identity.
+                    name in setOf("kotlin.collections.mutableSetOf", "kotlin.collections.hashSetOf", "kotlin.collections.linkedSetOf") -> {
+                        val owner = env["@receiver"]?.takeIf { it["kind"] == "INSTANCE" }?.get("identity")
+                        record("kind" to "OPAQUE", "callId" to call["id"], "name" to name, "type" to expr["type"], "arguments" to args,
+                            "allocationIdentity" to if (owner != null) fingerprint(record("call" to call["id"], "owner" to owner)) else key)
+                    }
                     name in setOf("kotlin.collections.listOf", "kotlin.collections.mutableListOf", "kotlin.collections.arrayListOf", "kotlin.collections.setOf", "kotlin.arrayOf") ->
                         record("kind" to "LIST_VALUE", "identity" to "list:" + key, "items" to args.values.flatMap { if (it["kind"] == "LIST_VALUE") it.records("items") else listOf(it) })
                     name == "kotlin.collections.emptyList" -> record("kind" to "LIST_VALUE", "items" to emptyList<Record>())
@@ -363,7 +371,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                             if (resolved.size == 1 && candidates.all { it.records("conditions").isEmpty() }) resolved.single() else unknown("RETURN_ALTERNATIVES_UNRESOLVED", call.string("id"))
                         }
                     }
-                    else -> record("kind" to "OPAQUE", "callId" to call["id"], "name" to name, "type" to expr["type"])
+                    else -> record("kind" to "OPAQUE", "callId" to call["id"], "name" to name, "type" to expr["type"], "arguments" to args)
                 }
             }
             else -> unknown(expr.string("expressionType").ifEmpty { "EXPRESSION_UNMODELED" })

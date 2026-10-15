@@ -4,6 +4,29 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class TransitionAnalysisTest {
+    @Test fun `opaque calls retain argument and field allocation identity without weakening same input guards`() {
+        val create = call("set", "kotlin.collections.mutableSetOf", emptyList())
+        val contains = call("contains", "kotlin.collections.MutableSet.contains", listOf(argument("this", reference("setValue"), "DispatchReceiver"), argument("element", reference("element"))))
+        val flow = FlowValues(record("callRelations" to listOf(create, contains)))
+        fun set(owner: String, unrelated: Int) = flow.eval(record("kind" to "CALL", "callId" to "set", "type" to "kotlin.collections.MutableSet<kotlin.String>"),
+            mapOf("@receiver" to record("kind" to "INSTANCE", "identity" to owner), "unrelated" to constant(unrelated)))
+        val one = set("owner:one", 1)
+        assertEquals(one, set("owner:one", 2))
+        assertNotEquals(one, set("owner:two", 1))
+        fun test(receiver: Record, element: String) = flow.eval(record("kind" to "CALL", "callId" to "contains", "type" to "kotlin.Boolean"), mapOf("setValue" to receiver, "element" to constant(element)))
+        fun guard(value: Record, expected: Boolean) = record("test" to value, "expected" to expected)
+        assertTrue(AccessPaths.contradictory(listOf(guard(test(one, "a"), true), guard(test(one, "a"), false))))
+        assertFalse(AccessPaths.contradictory(listOf(guard(test(one, "a"), true), guard(test(one, "b"), false))))
+        assertFalse(AccessPaths.contradictory(listOf(guard(test(one, "a"), true), guard(test(set("owner:two", 1), "a"), false))))
+    }
+    @Test fun `unresolved CompositionLocal reads are scoped to composition context`() {
+        val current = call("local", "androidx.compose.runtime.CompositionLocal.<get-current>", listOf(argument("this", record("kind" to "COMPOSITION_LOCAL", "identity" to "Local"), "DispatchReceiver")))
+        val flow = FlowValues(record("callRelations" to listOf(current)))
+        fun read(context: String) = flow.eval(record("kind" to "CALL", "callId" to "local"), mapOf("@context" to record("ref" to context)))
+        assertEquals(read("one"), read("one"))
+        assertNotEquals(read("one"), read("two"))
+        assertEquals("UNKNOWN", read("one")["kind"])
+    }
     @Test fun `injected field lookup requires unique declaring class and exact annotations`() {
         val field = record("ref" to "Activity.helper", "type" to "Helper", "annotations" to listOf(record("name" to "javax.inject.Inject")))
         val activity = record("symbol" to "Activity", "annotations" to listOf(record("name" to "dagger.hilt.android.AndroidEntryPoint")), "fields" to listOf(field))

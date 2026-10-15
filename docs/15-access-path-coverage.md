@@ -53,6 +53,14 @@ scope 함수는 callback을 실행하는 것과 반환값을 전달하는 것을
 
 symbolic enum에는 별도의 모순 규칙을 적용한다. 같은 타입·피연산자·상태 버전이 서로 다른 enum 엔트리와 동시에 같을 수 없다. 비교 대상의 정적 타입이 해당 enum인 경우만 제한하며 Any나 사용자 equals는 추정하지 않는다. 이 배제 관계를 공유 predicate의 `enumConstraint`에도 보관해 보고서 압축 뒤 경로 탐색에서 유지한다. 독립 검증기는 원래 조건식으로부터 제약을 다시 계산해 일치 여부를 검사한다. 다른 변수와 다른 상태 버전은 독립으로 취급한다.
 
+### 미해석 값의 입력 식별
+
+미해석 호출 결과를 호출 위치 하나로만 식별하면, 공통 helper가 서로 다른 객체·인자로 수행한 검사를 같은 조건으로 오판한다. 실제 온보딩 단계에서 화면마다 따로 생성한 측정 객체의 집합 검사와 서로 다른 이벤트의 Channel 결과가 충돌했다. 연결을 찾고도 경로를 제거한 값 모델의 오류다.
+
+`OPAQUE` 값에 평가된 호출 인자와 receiver를 보존한다. 동일 호출·동일 입력은 계속 같은 조건이고, 다른 입력은 다른 조건이다. mutableSetOf/hashSetOf/linkedSetOf의 필드 초기화는 입증된 객체 owner와 생성 호출로 allocation identity를 정한다. 같은 필드를 다른 메서드에서 읽는 것은 같은 객체이며 다른 화면 객체의 필드는 구분한다. 집합의 변경·멤버십을 실행하거나 결과를 true로 가정하지 않는다. 미입증 CompositionLocal 읽기도 현재 composition 문맥과 local 참조를 보존하고 UNKNOWN 상태를 유지한다. 알려진 provider의 값은 기존대로 우선한다.
+
+실제 Kotlin 컴파일 반례는 같은 helper를 다른 인자·객체로 호출한 조건을 구분하고, 같은 객체·같은 인자에 대한 true/false 모순은 계속 거부하는지 검사한다. 이 식별 보완은 일반 heap 상태 변화나 임의 외부 함수의 순수성을 입증하지 않는다.
+
 ### 입증된 외부 링크 경로
 
 외부 링크를 등록 화면에 직접 연결하지 않는다. 실제 merged Manifest의 VIEW·DEFAULT·BROWSABLE filter에서 구체적인 URI 입력을 만들고, 해당 Activity의 Android lifecycle override인 `onNewIntent` 본문에 Intent 값을 전달한다. URI 파서와 조건 분기를 해석한 결과가 기존 Channel·host 소유권 검사와 순서 있는 stack 효과까지 이어져야 전환이 된다. Manifest 수신 선언이나 파서 반환값만으로는 경로가 생기지 않는다.

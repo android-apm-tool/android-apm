@@ -12,6 +12,38 @@ import java.nio.file.Path
 import kotlin.io.path.*
 
 class CatalogCollectorTest {
+    @Test fun `opaque collection predicates distinguish inputs and objects but reject identical contradictory reads`() {
+        val catalog = compile("""
+            object Home
+            object Detail
+            object Other
+            object Never
+            class Probe(seed: String) {
+                val values = mutableSetOf(seed)
+                fun has(key: String): Boolean = values.contains(key)
+            }
+            @Composable fun App() {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> {
+                        val one = Probe("first")
+                        val two = Probe("second")
+                        if (one.has("first")) {
+                            if (!one.has("second")) androidx.compose.material3.Button(onClick = { stack.add(Detail) })
+                            if (!one.has("first")) androidx.compose.material3.Button(onClick = { stack.add(Never) })
+                            if (!two.has("first")) androidx.compose.material3.Button(onClick = { stack.add(Other) })
+                        }
+                    }
+                    entry<Detail> {}
+                    entry<Other> {}
+                    entry<Never> {}
+                })
+            }
+        """.trimIndent())
+        val result = TransitionAnalysis.create(catalog).report
+        val effects = result.records("effects").associateBy { it["id"] }
+        assertEquals(setOf("fixture.Detail", "fixture.Other"), result.records("transitions").flatMap { it.strings("effectRefs") }.map { effects.getValue(it)["payload"].record().string("type") }.toSet())
+    }
     @Test fun `dead render labels release branch state while a later callback retains its captured destination`() {
         val decorations = (0..11).joinToString("\n") { "val label$it = if (input > $it) \"a\" else \"b\"; androidx.compose.material3.Text(label$it)" }
         for (declaration in listOf("val action = { stack.add(destination); Unit }",
