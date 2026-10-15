@@ -63,6 +63,8 @@ flowchart TD
 
 공개 합성 테스트는 비활성 버튼, 동명 API, 일반 operator invoke, Result 성공/실패의 모순, 명시적 throw, 미호출 launcher, 다른 launcher, 다른 Channel, 다른 화면의 collector, 서로 다른 ViewModel owner/key, 상속 메서드 인자 바인딩, 고분기 화면의 탐색 독점, false guard를 검사한다. 실제 Kotlin 컴파일 fixture로 상속 심벌이 수집 단계부터 일치하는지도 확인한다.
 
+Result 처리는 실제 표준 라이브러리를 사용하는 Kotlin 컴파일 fixture에서도 검사한다. 일반·확장 `runCatching`의 성공 값이 정확한 목적지까지 전달되는지, 명시적 throw가 성공 경로를 만들지 않는지, 성공의 PUSH와 실패의 CLEAR가 하나의 전환으로 합쳐지지 않는지를 확인한다.
+
 룰업 검증에서는 새 37모듈 수집과 실제 merged Manifest를 사용한다. 화면 문맥의 분모, 성공 실행 정책, 근거 참조, 경로의 시작점·목적지·전환 순서를 확인해야 한다. 95% 도달 여부는 완료된 검증 결과로만 보고한다. 합성 테스트 통과나 CI 성공이 이 수치를 대신하지 않는다.
 
 ## 보안과 해석 한계

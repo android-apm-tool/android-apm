@@ -12,6 +12,29 @@ import java.nio.file.Path
 import kotlin.io.path.*
 
 class CatalogCollectorTest {
+    @Test fun `compiled Result callbacks preserve values receivers and exclusive failure branches`() {
+        for (work in listOf("runCatching { Detail }", "Detail.runCatching { this }", "runCatching<Any> { throw IllegalStateException() }")) {
+            val catalog = compile("""
+                object Home
+                object Detail
+                @Composable fun App() {
+                    val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                    androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                        entry<Home> { androidx.compose.material3.Button(onClick = {
+                            $work.onSuccess { stack.add(it) }.onFailure { stack.clear() }
+                        }) }
+                        entry<Detail> {}
+                    })
+                }
+            """.trimIndent())
+            val report = TransitionAnalysis.create(catalog).report
+            val effects = report.records("effects").associateBy { it.string("id") }
+            val edges = report.records("transitions")
+            val detail = report.records("contexts").single { it.records("keyPatterns").any { key -> key["type"] == "fixture.Detail" } }.string("id")
+            assertEquals(!work.contains("throw"), edges.any { detail in it.strings("targetContextRefs") }, work)
+            assertFalse(edges.any { edge -> edge.strings("effectRefs").map { effects[it]?.get("operation") }.toSet().containsAll(setOf("PUSH", "CLEAR")) }, work)
+        }
+    }
     @Test fun `anonymous receiver methods use their own captured callback`() {
         val catalog = compile("""
             object Home
