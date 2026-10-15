@@ -54,18 +54,19 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
         return record("kind" to "UNKNOWN", "reason" to reason, "originRef" to origin)
     }
     fun constant(value: Any?) = record("kind" to "CONSTANT", "value" to value)
+    private fun rawType(type: String): String = type.removeSuffix("?").let { if (it in classes) it else it.substringBefore('<') }
     /** Resolve using exact override symbols and the proven receiver hierarchy. */
     fun implementation(declared: Record, receiver: Record?): Record? {
         if (declared["overridable"] != true) return declared
         if (receiver?.get("kind") != "INSTANCE") return null
         val cacheKey = declared.string("symbol") to receiver.string("type")
         if (implementations.containsKey(cacheKey)) return implementations[cacheKey]
-        val distances = linkedMapOf(receiver.string("type").substringBefore('<') to 0)
+        val distances = linkedMapOf(rawType(receiver.string("type")) to 0)
         val pending = ArrayDeque(distances.keys)
         while (pending.isNotEmpty()) {
             val type = pending.removeFirst()
             classes[type]?.strings("superTypes").orEmpty().forEach { parent ->
-                val name = parent.substringBefore('<').removeSuffix("?")
+                val name = rawType(parent)
                 if (name !in distances) { distances[name] = distances.getValue(type) + 1; pending.add(name) }
             }
         }
@@ -79,7 +80,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
         return candidates.filter { distances[it.string("classOwner")] == nearest }.singleOrNull().also { implementations[cacheKey] = it }
     }
     private fun standardEquality(actual: String, seen: Set<String> = emptySet()): Boolean {
-        val type = actual.removeSuffix("?").substringBefore('<')
+        val type = rawType(actual)
         if (type == "kotlin.Any" || type == "java.lang.Object") return true
         if (type in seen) return false
         val declaration = classes[type] ?: return false
@@ -87,7 +88,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
         return declaration.strings("superTypes").all { standardEquality(it, seen + type) }
     }
     private fun subtype(actual: String, tested: String, seen: Set<String> = emptySet()): Boolean? {
-        val type = actual.removeSuffix("?").substringBefore('<')
+        val type = rawType(actual)
         if (type == tested || tested == "kotlin.Any") return true
         if (type in seen) return null
         if (type in setOf("kotlin.Any", "java.lang.Object")) return false
@@ -110,7 +111,12 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
             when (value) {
                 is Map<*, *> -> {
                     val item = value.record()
-                    if (item["kind"] == "REFERENCE") found += item.string("ref")
+                    if (item["kind"] == "REFERENCE") {
+                        val reference = item.string("ref")
+                        found += reference
+                        val alias = values[reference]
+                        if (alias?.get("storage") == "LOCAL" && alias["mutable"] != true && visited.add("value:" + reference)) scan(alias["value"], depth + 1)
+                    }
                     if (item["kind"] in setOf("CALL", "CONSTRUCTOR")) {
                         val call = item.string("callId")
                         if (visited.add("call:" + call)) scan(calls[call]?.get("arguments"), depth + 1)
@@ -187,6 +193,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                 env["@expression:" + expr.string("expressionId")]?.let { return it }
                 val bound = env.toMutableMap()
                 for (stmt in expr.records("statements")) {
+                    if (stmt["op"] == "DECLARATION" && stmt["elementType"] in setOf("IrClassImpl", "IrFunctionImpl", "IrSimpleFunctionImpl")) continue
                     if (stmt["op"] !in setOf("DECLARE", "WRITE")) return unknown("EXPRESSION_CONTROL_REQUIRES_INTERPRETER", expr.string("expressionId"))
                     bound[stmt.string("ref")] = eval(stmt["value"].record(), bound, depth + 1, seen)
                 }

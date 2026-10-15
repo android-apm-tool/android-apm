@@ -12,6 +12,30 @@ import java.nio.file.Path
 import kotlin.io.path.*
 
 class CatalogCollectorTest {
+    @Test fun `anonymous receiver methods use their own captured callback`() {
+        val catalog = compile("""
+            object Home
+            object Detail
+            interface Relay { fun run() }
+            fun relay(action: () -> Unit): Relay {
+                val stored = action
+                return object : Relay { override fun run() { stored() } }
+            }
+            @Composable fun App() {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                val active = relay { stack.add(Detail) }
+                val unused = relay { stack.clear() }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> { androidx.compose.material3.Button(onClick = { active.run() }) }
+                    entry<Detail> {}
+                })
+            }
+        """.trimIndent())
+        val report = TransitionAnalysis.create(catalog).report
+        val effects = report.records("effects").associateBy { it.string("id") }
+        assertTrue(report.records("transitions").any { it.strings("targetContextRefs").isNotEmpty() }, Json.encode(report))
+        assertTrue(report.records("transitions").all { edge -> edge.strings("effectRefs").all { effects[it]?.get("operation") == "PUSH" } })
+    }
     @Test fun `inherited generic methods and getters retain their declaring symbols and argument bindings`() {
         val catalog = compile("""
             object Home
