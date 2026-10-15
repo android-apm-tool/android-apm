@@ -34,6 +34,10 @@ internal object ProviderExpansion {
                     "keyPatterns" to listOf(record("kind" to "FIELD_KEY", "type" to keyType, "field" to selector["property"], "value" to key)),
                     "content" to fn, "entryArguments" to listOf(record("kind" to "INSTANCE", "type" to keyType, "identity" to "entry:" + contextId, "fields" to fields)),
                     "expectedRenderRefs" to renderRefs, "providerLookupRef" to lookup["id"], "definitionStatus" to "LOOKUP_REQUIRES_RENDER_PROOF",
+                    // A single stored slot identifies the exact candidate; shared
+                    // function names alone cannot discharge another allocation.
+                    "storageCandidateRef" to if (contentFields.size == 1 && value.string("allocationRef").isNotEmpty())
+                        value.string("allocationRef") + ":" + contentFields.single() else null,
                     "source" to constructor["source"])
             }
         }.distinctBy { it["id"] }

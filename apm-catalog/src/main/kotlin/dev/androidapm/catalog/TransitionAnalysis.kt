@@ -64,7 +64,6 @@ object TransitionAnalysis {
                     "bindingRef" to b["id"], "hostRef" to h, "keyPatterns" to b["keyCandidates"],
                     "content" to b["content"], "definitionStatus" to "REGISTERED", "source" to b["source"]) }
             }
-            catalog.records("screenCandidates").forEach { problem("DESTINATION_BINDING_UNRESOLVED", it.string("id"), detail = "Content storage requires lookup/render proof") }
             contexts.forEachIndexed { index, c ->
                 onContext(index + 1, contexts.size)
                 visits = 0
@@ -85,6 +84,11 @@ object TransitionAnalysis {
                         "reachedRenderRefs" to reachedRenders[c.string("id")].orEmpty().sorted())
                     if (!proved) problem("PROVIDER_RENDER_NOT_PROVEN", c.string("providerLookupRef"), c.string("id"))
                 }
+            }
+            val registeredStorage = contexts.filter { it["definitionStatus"] == "REGISTERED_LOOKUP_RENDER" }
+                .map { it.string("storageCandidateRef") }.filter { it.isNotEmpty() }.toSet()
+            catalog.records("screenCandidates").filter { it.string("id") !in registeredStorage }.forEach {
+                problem("DESTINATION_BINDING_UNRESOLVED", it.string("id"), detail = "Content storage requires lookup/render proof")
             }
             val proven = contexts.filter { it["definitionStatus"] != "UNRESOLVED_RENDER" }.map { it["id"] }.toSet()
             transitions.entries.removeIf { (_, edge) -> edge.strings("originContextRefs").none { it in proven } }

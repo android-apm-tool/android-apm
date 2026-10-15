@@ -188,6 +188,14 @@ class CatalogCollectorTest {
         val home = contexts.single { it.records("keyPatterns").single()["value"].record()["value"] == "home" }
         val renderer = home.strings("expectedRenderRefs").single()
         assertTrue(catalog.records("callRelations").any { it["owner"] == renderer && it["name"] == "fixture.Home" }, "associateBy must select the last duplicate key")
+        val registered = contexts.map { it.string("storageCandidateRef") }.toSet()
+        val unused = catalog.records("screenCandidates").single { it["id"] !in registered }
+        assertEquals(listOf(unused["id"]), result.records("diagnostics").filter { it["code"] == "DESTINATION_BINDING_UNRESOLVED" }.map { it["subjectRef"] })
+        val entry = catalog.records("entryBindings").single()["content"].record()["ref"]
+        val unrendered = catalog + record("functionBodies" to catalog.records("functionBodies").map {
+            if (it["owner"] == entry) it + record("body" to record("op" to "BLOCK", "statements" to emptyList<Record>())) else it
+        })
+        assertEquals(3, TransitionAnalysis.create(unrendered).report.records("diagnostics").count { it["code"] == "DESTINATION_BINDING_UNRESOLVED" })
     }
 
     @Test fun `real IR channel delivery requires the same captured channel and keeps delivery conditions`() {
