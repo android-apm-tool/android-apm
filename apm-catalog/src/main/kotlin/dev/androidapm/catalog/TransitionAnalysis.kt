@@ -30,6 +30,7 @@ object TransitionAnalysis {
         val reachedRenders = mutableMapOf<String, MutableSet<String>>()
         var visits = 0
         var truncated = false
+        var cutoffs = 0
         fun problem(code: String, ref: String, context: String = "", detail: String = "") {
             val v = record("code" to code, "subjectRef" to ref, "contextRef" to context, "detail" to detail)
             unresolved.putIfAbsent(fingerprint(v), v)
@@ -111,7 +112,7 @@ object TransitionAnalysis {
             return TransitionResult(report, record("schemaVersion" to 1, "catalogFingerprint" to report["catalogFingerprint"],
                 "evidence" to evidence.map { (id, v) -> record("id" to id) + v }))
         }
-        fun budget(depth: Int): Boolean = if (++visits > 100_000 || depth > 192) { truncated = true; false } else true
+        fun budget(depth: Int): Boolean = if (++visits > 100_000 || depth > 192) { truncated = true; cutoffs++; false } else true
         fun invoke(fn: Record, args: List<Record>, parent: Frame, c: Record, event: String?, seen: Set<Invocation>, depth: Int): List<Frame> {
             if (!budget(depth)) return listOf(parent.copy(uncertain = true, stop = "LIMIT"))
             val ref = fn.string("ref")
@@ -127,9 +128,16 @@ object TransitionAnalysis {
             }
             val key = Invocation(ref, env.toMap(), event)
             if (key in seen) { problem("RECURSIVE_CONTROL_FLOW", ref, c.string("id")); return listOf(parent.copy(uncertain = true)) }
-            return walk(body, parent.copy(env = env, value = emptyMap()), c, event, seen + key, depth + 1).map {
+            val before = cutoffs
+            val returned = walk(body, parent.copy(env = env, value = emptyMap()), c, event, seen + key, depth + 1).map {
                 it.copy(env = parent.env, stop = if (it.stop == "RETURN" || it.stop == "RETURN:" + ref) "" else it.stop)
             }
+            // Rendering registers its child triggers immediately. Once every
+            // branch returns the same value without effects, its local guards
+            // must not constrain later, independent caller content.
+            return if (event == null && cutoffs == before && returned.isNotEmpty() && returned.all { it.stop.isEmpty() && it.effects == parent.effects } &&
+                returned.map { it.value }.distinct().size == 1 && returned.all { it.guards.containsAll(parent.guards) })
+                listOf(parent.copy(value = returned.first().value, uncertain = parent.uncertain || returned.any { it.uncertain })) else returned
         }
         fun walk(stmt: Record, f: Frame, c: Record, event: String?, seen: Set<Invocation>, depth: Int): List<Frame> {
             if (!budget(depth)) return listOf(f.copy(uncertain = true, stop = "LIMIT"))
@@ -144,6 +152,7 @@ object TransitionAnalysis {
                     if (stmt["op"] == "RETURN") it.copy(stop = if (stmt.string("target").isEmpty()) "RETURN" else "RETURN:" + stmt.string("target"), value = flow.eval(stmt["value"].record(), it.env)) else it
                 }
                 "BRANCH" -> {
+                    val before = cutoffs
                     var remaining: Frame? = f
                     val paths = mutableListOf<Frame>()
                     for (branch in stmt.records("branches")) {
@@ -153,7 +162,8 @@ object TransitionAnalysis {
                         remaining = assume(current, test, false)
                     }
                     remaining?.let { paths += it }
-                    bounded(paths)
+                    if (event == null && cutoffs == before && paths.isNotEmpty() && paths.all { it.stop.isEmpty() && it.env == f.env && it.effects == f.effects && it.value == f.value })
+                        listOf(f.copy(uncertain = f.uncertain || paths.any { it.uncertain })) else bounded(paths)
                 }
                 "THROW" -> listOf(f.copy(stop = "THROW", uncertain = true))
                 "WRITE_FIELD", "LOOP", "TRY", "UNKNOWN" -> {
@@ -164,7 +174,7 @@ object TransitionAnalysis {
             }
         }
         fun bounded(frames: List<Frame>): List<Frame> {
-            if (frames.size > 256) { truncated = true; problem("BRANCH_BUDGET_EXCEEDED", "") }
+            if (frames.size > 256) { truncated = true; cutoffs++; problem("BRANCH_BUDGET_EXCEEDED", "") }
             return frames.take(256)
         }
         fun assume(f: Frame, test: Record, expected: Boolean): Frame? {
@@ -248,7 +258,8 @@ object TransitionAnalysis {
                     val stackIds = flow.closures[callback.string("closureId")].orEmpty().values.filter { it["kind"] == "STACK" }.map { it.string("identity") }.distinct()
                     collectors[id] = record("id" to id, "callRef" to call["id"], "streamIdentity" to stream["identity"], "streamKind" to stream["streamKind"],
                         "callback" to callback, "stackIdentities" to stackIds, "guards" to f.guards, "evidenceRefs" to next.trace, "delivery" to "CONDITIONAL_NOT_OBSERVED")
-                } else problem("STREAM_COLLECTOR_UNRESOLVED", call.string("id"), c.string("id"))
+                } else problem("STREAM_COLLECTOR_UNRESOLVED", call.string("id"), c.string("id"),
+                    "stream=" + stream?.get("kind") + "; reason=" + stream?.get("reason") + "; callback=" + callback?.get("kind"))
                 return listOf(next.copy(uncertain = true))
             }
             if (event != null && name.startsWith("kotlinx.coroutines.channels.") && name.substringAfterLast('.') in setOf("trySend", "send")) {

@@ -4,6 +4,31 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class TransitionAnalysisTest {
+    @Test fun `inherited composition local current resolves only its provided identity`() {
+        val local = record("kind" to "COMPOSITION_LOCAL", "identity" to "navigation")
+        val stream = record("kind" to "STREAM", "identity" to "channel", "ownerProven" to true)
+        for (owner in listOf("CompositionLocal", "ProvidableCompositionLocal")) {
+            val getter = call("current", "androidx.compose.runtime.$owner.<get-current>", listOf(argument("this", local, "DispatchReceiver")))
+            val flow = FlowValues(record("callRelations" to listOf(getter)))
+            val expr = record("kind" to "CALL", "callId" to "current")
+            assertEquals(stream, flow.eval(expr, mapOf("@local:navigation" to stream)))
+            assertEquals("COMPOSITION_LOCAL_PROVIDER_UNRESOLVED", flow.eval(expr, mapOf("@local:different" to stream))["reason"])
+            assertEquals("COMPOSITION_LOCAL_PROVIDER_UNRESOLVED", flow.eval(expr)["reason"])
+        }
+    }
+    @Test fun `independent rendering branch does not constrain the following button`() {
+        val base = fixture()
+        val decorative = record("op" to "BRANCH", "branches" to listOf(record("test" to reference("showDecoration"), "body" to statement("decoration"))))
+        val input = base + record(
+            "callRelations" to base.records("callRelations") + call("decoration", "androidx.compose.foundation.layout.Box", emptyList()),
+            "functionBodies" to base.records("functionBodies").filter { it["owner"] != "Home" } + body("Home", listOf(decorative, statement("button"))))
+        val edges = TransitionAnalysis.create(input).report.records("transitions")
+        assertEquals(1, edges.size)
+        assertTrue(edges.single().records("guards").isEmpty())
+        val returning = decorative + record("branches" to listOf(record("test" to reference("hidden"), "body" to record("op" to "RETURN", "value" to constant(null)))))
+        val early = input + record("functionBodies" to input.records("functionBodies").filter { it["owner"] != "Home" } + body("Home", listOf(returning, statement("button"))))
+        assertEquals(false, TransitionAnalysis.create(early).report.records("transitions").single().records("guards").single()["expected"])
+    }
     @Test fun `incremental argument binding cannot mutate an existing cache key`() {
         val flow = FlowValues(emptyMap(), evaluationLimit = 2)
         val expr = record("kind" to "REFERENCE", "ref" to "argument")

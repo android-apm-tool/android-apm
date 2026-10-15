@@ -174,7 +174,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                     name in setOf("androidx.compose.runtime.compositionLocalOf", "androidx.compose.runtime.staticCompositionLocalOf") -> record("kind" to "COMPOSITION_LOCAL", "identity" to call["id"])
                     name in setOf("androidx.compose.runtime.ProvidableCompositionLocal.provides", "androidx.compose.runtime.ProvidableCompositionLocal.providesDefault") ->
                         record("kind" to "PROVIDED_LOCAL", "local" to args.values.firstOrNull(), "value" to args.values.lastOrNull())
-                    name == "androidx.compose.runtime.CompositionLocal.<get-current>" -> {
+                    name in setOf("androidx.compose.runtime.CompositionLocal.<get-current>", "androidx.compose.runtime.ProvidableCompositionLocal.<get-current>") -> {
                         val local = args.values.firstOrNull()
                         env["@local:" + local?.get("identity")] ?: unknown("COMPOSITION_LOCAL_PROVIDER_UNRESOLVED", call.string("id"))
                     }
