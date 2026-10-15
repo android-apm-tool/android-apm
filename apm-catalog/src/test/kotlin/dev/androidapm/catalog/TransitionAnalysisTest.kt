@@ -4,6 +4,50 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class TransitionAnalysisTest {
+    @Test fun `different concrete event types cannot enter singleton branches unless equality is custom or unknown`() {
+        val left = record("kind" to "INSTANCE", "identity" to "object:Load", "type" to "Load")
+        val right = record("kind" to "INSTANCE", "identity" to "allocation:Open", "type" to "Open")
+        val base = record("classes" to listOf(record("symbol" to "Load", "superTypes" to listOf("Event")), record("symbol" to "Event", "superTypes" to listOf("kotlin.Any"))),
+            "callRelations" to listOf(call("equal", "kotlin.internal.ir.EQEQ", listOf(argument("left", left), argument("right", right)))))
+        val expr = record("kind" to "CALL", "callId" to "equal")
+        assertEquals(constant(false), FlowValues(base).eval(expr))
+        assertEquals("PREDICATE", FlowValues(base + record("classes" to emptyList<Record>())).eval(expr)["kind"])
+        for (owner in listOf("Load", "Event")) {
+            val custom = base + record("functions" to listOf(record("symbol" to "$owner.equals", "classOwner" to owner, "simpleName" to "equals")))
+            assertEquals("PREDICATE", FlowValues(custom).eval(expr)["kind"])
+        }
+    }
+    @Test fun `repeated trigger evaluation reuses proof but distinct enabled values remain separate`() {
+        val base = fixture()
+        val calls = base.records("callRelations").map { if (it["id"] == "button") call("button", "androidx.compose.material3.Button", listOf(argument("onClick", function("Action")), argument("enabled", reference("enabled")))) else it }
+        val statements = listOf(record("op" to "DECLARE", "ref" to "enabled", "value" to constant(false)), statement("button"),
+            record("op" to "WRITE", "ref" to "enabled", "value" to constant(true)), statement("button"), statement("button"))
+        val input = base + record("callRelations" to calls, "functionBodies" to base.records("functionBodies").filter { it["owner"] != "Home" } + body("Home", statements))
+        val result = TransitionAnalysis.create(input).report
+        assertEquals(2, result.records("triggers").size)
+        assertEquals(1, result.records("transitions").size)
+    }
+    @Test fun `event stack is independent of render stack and exhausted handlers do not hide later buttons`() {
+        fun nested(count: Int, exhausted: Boolean): Record {
+            val base = fixture()
+            val render = (0 until count).map { "Render$it" }
+            val handlers = (0 until if (exhausted) 250 else count).map { "Handler$it" }
+            val names = render + handlers
+            val calls = names.map { call(it, it, emptyList()) }
+            val bodies = render.mapIndexed { i, name -> body(name, listOf(statement(render.getOrNull(i+1) ?: "button"))) } +
+                handlers.mapIndexed { i, name -> body(name, listOf(statement(handlers.getOrNull(i+1) ?: "push"))) }
+            return base + record("callRelations" to base.records("callRelations") + calls + call("later", "androidx.compose.material3.Button", listOf(argument("onClick", function("Later")))),
+                "functionBodies" to base.records("functionBodies").filter { it["owner"] !in setOf("Home", "Action") } + bodies +
+                    body("Home", listOf(statement(render.first()), statement("later"))) + body("Action", listOf(statement(handlers.first()))) + body("Later", listOf(statement("push"))),
+                "functions" to base.records("functions") + (names + "Later").map { record("symbol" to it, "parameters" to emptyList<Record>()) })
+        }
+        val separated = TransitionAnalysis.create(nested(20, false)).report
+        assertEquals(2, separated.records("transitions").size)
+        val limited = TransitionAnalysis.create(nested(20, true)).report
+        assertEquals(1, limited.records("transitions").size)
+        assertEquals("TRUNCATED", limited["coverage"])
+        assertTrue(limited.records("diagnostics").any { it["code"] == "CONTROL_FLOW_DEPTH_LIMIT" })
+    }
     @Test fun `inherited composition local current resolves only its provided identity`() {
         val local = record("kind" to "COMPOSITION_LOCAL", "identity" to "navigation")
         val stream = record("kind" to "STREAM", "identity" to "channel", "ownerProven" to true)

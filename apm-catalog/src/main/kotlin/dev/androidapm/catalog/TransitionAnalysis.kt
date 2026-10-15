@@ -31,6 +31,7 @@ object TransitionAnalysis {
         var visits = 0
         var truncated = false
         var cutoffs = 0
+        var analysisContext = ""
         fun problem(code: String, ref: String, context: String = "", detail: String = "") {
             val v = record("code" to code, "subjectRef" to ref, "contextRef" to context, "detail" to detail)
             unresolved.putIfAbsent(fingerprint(v), v)
@@ -45,6 +46,7 @@ object TransitionAnalysis {
                 visits = 0
                 flow.beginContext("root:" + root.string("id"))
                 val c = record("id" to "root:" + root.string("id"), "hostRef" to "", "root" to true)
+                analysisContext = c.string("id")
                 val content = root.records("arguments").firstOrNull { it["name"] == "content" }?.get("value").record()
                 val fn = flow.eval(content, mapOf("@context" to record("ref" to c["id"])))
                 val guards = root.records("conditions").flatMap { branch -> listOf(record("test" to flow.eval(branch["test"].record()), "expected" to true)) + branch.records("excluded").map { record("test" to flow.eval(it), "expected" to false) } }
@@ -69,6 +71,7 @@ object TransitionAnalysis {
                 onContext(index + 1, contexts.size)
                 visits = 0
                 flow.beginContext(c.string("id"))
+                analysisContext = c.string("id")
                 val environment = hostEnvironments[c.string("hostRef")].orEmpty() + mapOf("@context" to record("ref" to c["id"]))
                 val fn = flow.eval(c["content"].record(), environment)
                 if (fn["kind"] == "FUNCTION") invoke(fn, c.records("entryArguments"), Frame(), c, null, emptySet(), 0)
@@ -112,7 +115,11 @@ object TransitionAnalysis {
             return TransitionResult(report, record("schemaVersion" to 1, "catalogFingerprint" to report["catalogFingerprint"],
                 "evidence" to evidence.map { (id, v) -> record("id" to id) + v }))
         }
-        fun budget(depth: Int): Boolean = if (++visits > 100_000 || depth > 192) { truncated = true; cutoffs++; false } else true
+        fun budget(depth: Int): Boolean = if (++visits > 100_000 || depth > 192) {
+            truncated = true; cutoffs++
+            problem(if (depth > 192) "CONTROL_FLOW_DEPTH_LIMIT" else "CONTROL_FLOW_VISIT_LIMIT", analysisContext, analysisContext)
+            false
+        } else true
         fun invoke(fn: Record, args: List<Record>, parent: Frame, c: Record, event: String?, seen: Set<Invocation>, depth: Int): List<Frame> {
             if (!budget(depth)) return listOf(parent.copy(uncertain = true, stop = "LIMIT"))
             val ref = fn.string("ref")
@@ -244,6 +251,10 @@ object TransitionAnalysis {
                 return listOf(next.copy(uncertain = true))
             }
             if (name == "androidx.compose.runtime.LaunchedEffect") {
+                if (event != null) {
+                    problem("NESTED_TRIGGER_REGISTRATION", call.string("id"), c.string("id"))
+                    return listOf(next.copy(uncertain = true))
+                }
                 val callback = args["block"].orEmpty()
                 val active = next.copy(guards = next.guards + record("test" to record("kind" to "PREDICATE", "operation" to "EFFECT_LIFECYCLE_ACTIVE", "callRef" to call["id"]), "expected" to true, "mutableState" to true))
                 if (callback["kind"] != "FUNCTION") return listOf(next.copy(uncertain = true))
@@ -376,11 +387,20 @@ object TransitionAnalysis {
         fun trigger(call: Record, kind: String, callback: Record, enabled: Record, f: Frame, c: Record, seen: Set<Invocation>, depth: Int) {
             if (c["root"] == true) return
             if (callback["kind"] != "FUNCTION") { problem("TRIGGER_CALLBACK_UNRESOLVED", call.string("id"), c.string("id")); return }
-            val id = "trigger:" + fingerprint(record("context" to c["id"], "call" to call["id"], "callback" to callback, "guards" to f.guards))
+            val id = "trigger:" + fingerprint(record("context" to c["id"], "call" to call["id"], "callback" to callback, "enabled" to enabled, "guards" to f.guards))
+            if (id in triggers) return
             triggers[id] = record("id" to id, "originContextRef" to c["id"], "kind" to kind, "callRef" to call["id"],
                 "callbackRef" to callback["ref"], "enabled" to enabled, "guards" to f.guards, "evidenceRefs" to f.trace)
             val active = assume(f.copy(effects = emptyList()), enabled, true) ?: return
-            invoke(callback, emptyList(), active, c, id, seen, depth + 1).filter { it.effects.isNotEmpty() }.forEach { plan ->
+            // Event execution starts after rendering. Its call stack and budget
+            // cannot consume the budget for discovering later UI controls.
+            val savedVisits = visits
+            val savedCutoffs = cutoffs
+            val plans = try {
+                visits = 0
+                flow.withFreshEvaluationBudget { invoke(callback, emptyList(), active, c, id, emptySet(), 0) }
+            } finally { visits = savedVisits; cutoffs = savedCutoffs }
+            plans.filter { it.effects.isNotEmpty() }.forEach { plan ->
                 val last = effects[plan.effects.last()].orEmpty()
                 val key = when (last["operation"]) { "PUSH" -> last["payload"].record(); "APPEND_ALL" -> last["payload"].record().records("items").lastOrNull().orEmpty(); else -> emptyMap() }
                 val targets = contexts.filter { it["hostRef"] == c["hostRef"] && it.records("keyPatterns").any { p -> keyMatches(p, key) } }

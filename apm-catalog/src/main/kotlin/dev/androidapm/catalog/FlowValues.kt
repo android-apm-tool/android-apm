@@ -3,6 +3,7 @@ package dev.androidapm.catalog
 /** Bounded, explicit value provenance. No target code is loaded or executed. */
 internal class FlowValues(val catalog: Record, private val evaluationLimit: Int = 300_000) {
     val functions = catalog.records("functions").associateBy { it.string("symbol") }
+    private val customEqualityTypes = functions.values.filter { it["simpleName"] == "equals" }.map { it.string("classOwner") }.toSet()
     val calls = catalog.records("callRelations").associateBy { it.string("id") }
     val values = catalog.records("values").associateBy { it.string("ref") }
     val returns = catalog.records("values").filter { "returnOf" in it }.groupBy { it.string("returnOf") }
@@ -15,8 +16,16 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
     private var evaluations = 0
     private var context = ""
     private data class EvalKey(val expression: Record, val environment: Map<String, Record>, val depth: Int, val seen: Set<String>)
-    private val memo = object : LinkedHashMap<EvalKey, Record>(256, 0.75f, true) {
+    private fun newMemo() = object : LinkedHashMap<EvalKey, Record>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<EvalKey, Record>?) = size > 20_000
+    }
+    private var memo = newMemo()
+    fun <T> withFreshEvaluationBudget(block: () -> T): T {
+        val savedEvaluations = evaluations
+        val savedMemo = memo
+        evaluations = 0
+        memo = newMemo()
+        return try { block() } finally { evaluations = savedEvaluations; memo = savedMemo }
     }
     private val environmentDigests = object : LinkedHashMap<Map<String, Record>, String>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Map<String, Record>, String>?) = size > 20_000
@@ -42,6 +51,14 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
         return record("kind" to "UNKNOWN", "reason" to reason, "originRef" to origin)
     }
     fun constant(value: Any?) = record("kind" to "CONSTANT", "value" to value)
+    private fun standardEquality(actual: String, seen: Set<String> = emptySet()): Boolean {
+        val type = actual.removeSuffix("?").substringBefore('<')
+        if (type == "kotlin.Any" || type == "java.lang.Object") return true
+        if (type in seen) return false
+        val declaration = classes[type] ?: return false
+        if (type in customEqualityTypes) return false
+        return declaration.strings("superTypes").all { standardEquality(it, seen + type) }
+    }
     private fun subtype(actual: String, tested: String, seen: Set<String> = emptySet()): Boolean? {
         val type = actual.removeSuffix("?").substringBefore('<')
         if (type == tested || tested == "kotlin.Any") return true
@@ -227,7 +244,12 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                         val list = args.values.toList()
                         if (list.all { it["kind"] == "CONSTANT" }) constant(if (name.endsWith(".not")) list.first()["value"] != true else list.getOrNull(0)?.get("value") == list.getOrNull(1)?.get("value"))
                         else if (!name.endsWith(".not") && list.size == 2 && list.any { it == constant(null) } && list.any { it["kind"] in setOf("INSTANCE", "FUNCTION", "STACK", "STREAM", "MAP_VALUE", "LIST_VALUE") }) constant(false)
-                        else if (!name.endsWith(".not") && list.size == 2 && list.all { it["kind"] == "INSTANCE" && it.string("identity").startsWith("object:") }) constant(list[0]["identity"] == list[1]["identity"])
+                        else if (!name.endsWith(".not") && list.size == 2 && list.all { it["kind"] == "INSTANCE" && it.string("identity").startsWith("object:") } &&
+                            (name.endsWith(".EQEQEQ") || standardEquality(list[0].string("type")))) constant(list[0]["identity"] == list[1]["identity"])
+                        // Source hierarchies without custom equals use identity or
+                        // Kotlin-generated equality, both rejecting another concrete type.
+                        else if (!name.endsWith(".not") && list.size == 2 && list.all { it["kind"] == "INSTANCE" } && list[0]["type"] != list[1]["type"] &&
+                            (name.endsWith(".EQEQEQ") || standardEquality(list[0].string("type")))) constant(false)
                         else record("kind" to "PREDICATE", "operation" to name, "arguments" to list)
                     }
                     name.endsWith(".invoke") -> args.values.firstOrNull { it["kind"] == "FUNCTION" }?.let { returned(it, args.values.drop(1), depth + 1) }
