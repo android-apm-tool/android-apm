@@ -7,6 +7,8 @@ object AccessPaths {
         require(transitions["catalogFingerprint"] == entries["catalogFingerprint"]) { "ACCESS_INPUT_PROVENANCE_MISMATCH" }
         val contexts = transitions.records("contexts")
         val edges = transitions.records("transitions")
+        val externalEntries = entries.records("entries").associateBy { it.string("id") }
+        val externalInputs = externalEntries.mapValues { ExternalIntents.candidates(it.value).toSet() }
         val outgoing = edges.withIndex().flatMap { (index, edge) -> edge.strings("originContextRefs").map { it to index } }
             .groupBy({ it.first }, { it.second })
         val effects = transitions.records("effects").associateBy { it.string("id") }
@@ -53,7 +55,7 @@ object AccessPaths {
             expansions[bucket.key] = (expansions[bucket.key] ?: 0) + 1
             val state = bucket.value.removeFirst()
             val key = fingerprint(record("entry" to state.entry, "host" to state.host, "stack" to state.stack, "prefix" to state.unknownPrefix,
-                "constraints" to state.guards.map { fingerprint(it) }.distinct().sorted(), "version" to state.version))
+                "constraints" to state.guards.map { fingerprint(it) }.distinct().sorted(), "version" to state.version, "externalEntries" to state.externalEntries))
             val seenCount = visited[key] ?: 0
             if (seenCount >= maxPaths) continue
             visited[key] = seenCount + 1
@@ -64,7 +66,7 @@ object AccessPaths {
                 if ((counts[id] ?: 0) < maxPaths) {
                     counts[id] = (counts[id] ?: 0) + 1
                     paths += record("id" to "path:" + fingerprint(record("entry" to state.entry, "target" to id, "steps" to state.steps)),
-                        "entryRef" to state.entry, "targetContextRef" to id, "steps" to state.steps, "initialOrRestored" to state.steps.isEmpty(),
+                        "entryRef" to state.entry, "externalEntryRefs" to state.externalEntries, "accessKind" to if (state.externalEntries.isEmpty()) "LAUNCHER" else "LAUNCHER_THEN_WARM_EXTERNAL_INTENT", "targetContextRef" to id, "steps" to state.steps, "initialOrRestored" to state.steps.isEmpty(),
                         "stack" to state.stack, "unknownPrefix" to state.unknownPrefix, "guards" to state.guards,
                         "feasibility" to if (state.guards.isEmpty()) "NO_KNOWN_CONTRADICTION" else "UNKNOWN",
                         "observation" to "NOT_OBSERVED", "stateVersion" to state.version)
@@ -73,6 +75,13 @@ object AccessPaths {
             val next = visible.flatMap { outgoing[it.string("id")].orEmpty() }.distinct().sorted().map { edges[it] }
             if (state.steps.size >= maxDepth) { if (next.isNotEmpty()) { truncated = true; unresolved("DEPTH_BUDGET_EXCEEDED", key) }; continue }
             for (edge in next) {
+                val external = edge.string("externalEntryRef")
+                if (external.isNotEmpty()) {
+                    if (query["includeExternalIntents"] == false) continue
+                    if (state.host !in externalEntries[external]?.strings("hostRefs").orEmpty() || edge["externalInput"].record() !in externalInputs[external].orEmpty()) {
+                        unresolved("EXTERNAL_ENTRY_UNPROVEN", edge.string("id")); continue
+                    }
+                }
                 if (edge["linkage"] == "UNRESOLVED") { unresolved("UNRESOLVED_TRANSITION", edge.string("id")); continue }
                 // A prefix of a stopped handler is not a completed stack plan.
                 // Later, unmodeled effects may clear or replace that destination.
@@ -108,10 +117,11 @@ object AccessPaths {
                     }
                     if (stack.size > suffixLimit) { stack = stack.takeLast(suffixLimit); unknownPrefix = true }
                 }
-                if (valid) enqueue(State(state.entry, state.host, stack, unknownPrefix, guards.distinct(), state.steps + edge.string("id"), version))
+                if (valid) enqueue(State(state.entry, state.host, stack, unknownPrefix, guards.distinct(), state.steps + edge.string("id"), version,
+                    if (external.isEmpty()) state.externalEntries else (state.externalEntries + external).distinct()))
             }
         }
-        return record("schemaVersion" to 1, "rulesVersion" to "access-v2", "searchOrder" to "FAIR_DESTINATION_EXPANSION", "aiMode" to "DISABLED", "catalogFingerprint" to transitions["catalogFingerprint"],
+        return record("schemaVersion" to 1, "rulesVersion" to "access-v3", "searchOrder" to "FAIR_DESTINATION_EXPANSION", "aiMode" to "DISABLED", "catalogFingerprint" to transitions["catalogFingerprint"],
             "transitionFingerprint" to fingerprint(transitions), "query" to query, "paths" to paths.sortedWith(compareBy({ it.string("targetContextRef") }, { it.strings("steps").size }, { it.string("id") })),
             "targets" to targets.sorted().map { record("contextRef" to it, "status" to if ((counts[it] ?: 0) > 0) "PATH_FOUND_IN_STATIC_MODEL" else "NO_PATH_FOUND_IN_EXPLORED_MODEL") },
             "frontier" to frontier.values.toList(), "inputCoverage" to transitions["coverage"],
@@ -120,7 +130,7 @@ object AccessPaths {
             "exploredStates" to explored, "limitations" to listOf("STATIC_PATH_IS_NOT_RUNTIME_ACCESS", "EXTERNAL_PRECONDITIONS_UNVERIFIED", "RESTORATION_AND_ASYNC_STATE_REQUIRE_EXPLICIT_INPUTS"))
     }
     private data class State(val entry: String, val host: String, val stack: List<Record>, val unknownPrefix: Boolean,
-        val guards: List<Record> = emptyList(), val steps: List<String> = emptyList(), val version: Int = 0)
+        val guards: List<Record> = emptyList(), val steps: List<String> = emptyList(), val version: Int = 0, val externalEntries: List<String> = emptyList())
     private fun limit(query: Record, key: String, default: Int, maximum: Int): Int = ((query[key] as? Number)?.toInt() ?: default).also { require(it in 1..maximum) { "INVALID_ACCESS_LIMIT:$key" } }
     internal fun contradictory(guards: List<Record>): Boolean = GuardChecks().contradictory(guards)
 

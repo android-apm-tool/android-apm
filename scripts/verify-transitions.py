@@ -29,6 +29,22 @@ detail = next(c["id"] for c in transitions["contexts"] if any(p.get("type", "").
 assert any(p["targetContextRef"] == detail and len(p["steps"]) == 1 for p in paths["paths"])
 known = {e["id"] for e in evidence["evidence"]}
 assert all(set(e["evidenceRefs"]) <= known for e in transitions["transitions"])
+assert transitions["evidenceFormat"] == "SHARED_CONDITIONS_TRACES_V1"
+proofs = {e["id"]: e for e in evidence["evidence"]}
+for edge in transitions["transitions"]:
+    ref = edge["traceRef"]
+    seen, trace = set(), []
+    while ref:
+        assert ref not in seen
+        seen.add(ref)
+        node = proofs[ref]
+        assert node["kind"] == "TRACE_NODE" and node["evidenceRef"] in proofs
+        trace.append(proofs[node["evidenceRef"]])
+        ref = node["previousRef"]
+    assert any(p["kind"] == "CALL" for p in trace)
+launcher = json.loads((reports / "launcher-access-paths.json").read_text())
+assert launcher["query"]["includeExternalIntents"] is False
+assert all(not p["externalEntryRefs"] for p in launcher["paths"])
 assert transitions["aiMode"] == "DISABLED"
 unchanged = run("up-to-date")
 assert ":app:apmFindDebugAccessPaths UP-TO-DATE" in unchanged

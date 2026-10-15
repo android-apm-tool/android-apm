@@ -12,6 +12,73 @@ import java.nio.file.Path
 import kotlin.io.path.*
 
 class CatalogCollectorTest {
+    @Test fun `warm links require manifest matching parser acceptance and actual stack application`() {
+        val catalog = compile("""
+            object Home
+            data class Detail(val token: String)
+            @javax.inject.Singleton class Navigator @javax.inject.Inject constructor() {
+                private val channel = kotlinx.coroutines.channels.Channel<Any>()
+                val events = channel.receiveAsFlow()
+                fun navigate(value: Any) { channel.trySend(value) }
+            }
+            @dagger.hilt.android.AndroidEntryPoint class Activity : android.app.Activity() {
+                @javax.inject.Inject lateinit var navigator: Navigator
+                override fun onCreate() { setContent { App() } }
+                override fun onNewIntent(intent: android.content.Intent) {
+                    val uri = intent.data ?: return
+                    val segments = uri.pathSegments
+                    if (segments.firstOrNull() != "invite") return
+                    val token = segments.getOrNull(1)?.takeIf { it.isNotBlank() } ?: return
+                    navigator.navigate(Detail(token))
+                }
+                @Composable fun App() {
+                    val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                    androidx.compose.runtime.LaunchedEffect(Unit) { navigator.events.collect { stack.add(it) } }
+                    androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                        entry<Home> {}
+                        entry<Detail> {}
+                    })
+                }
+            }
+        """.trimIndent().let { "import kotlinx.coroutines.flow.*\nimport androidx.activity.compose.setContent\n" + it }, mapOf(
+            "AndroidActivity.kt" to "package android.app\nopen class Activity { open fun onCreate() {}\nopen fun onNewIntent(intent: android.content.Intent) {} }",
+            "AndroidIntent.kt" to "package android.content\nabstract class Intent { abstract val data: android.net.Uri? }",
+            "AndroidUri.kt" to "package android.net\nabstract class Uri { abstract val pathSegments: List<String> }",
+            "SetContent.kt" to "package androidx.activity.compose\nfun android.app.Activity.setContent(content: @androidx.compose.runtime.Composable () -> Unit) {}"
+        ))
+        fun entries(prefix: String, exported: Boolean = true) = EntryPoints.collect("""
+            <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="fixture"><application>
+              <activity android:name="fixture.Activity" android:exported="$exported" android:launchMode="singleTask">
+                <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+                <intent-filter><action android:name="android.intent.action.VIEW"/><category android:name="android.intent.category.DEFAULT"/><category android:name="android.intent.category.BROWSABLE"/>
+                  <data android:scheme="https" android:host="example.test" android:pathPrefix="$prefix"/>
+                </intent-filter>
+              </activity>
+            </application></manifest>
+        """.trimIndent().byteInputStream(), catalog)
+        val input = entries("/invite")
+        val result = TransitionReports.compact(TransitionAnalysis.create(catalog, input))
+        val edges = result.report.records("transitions")
+        assertTrue(edges.any { it.string("externalEntryRef").isNotEmpty() && it.strings("targetContextRefs").isNotEmpty() }, Json.encode(result.report))
+        assertTrue(result.evidence.records("evidence").any { it["kind"] == "EXTERNAL_INTENT_DELIVERY" })
+        assertTrue(result.evidence.records("evidence").any { it["kind"] == "CHANNEL_TRANSFER" })
+        val paths = AccessPaths.find(result.report, input)
+        val launcher = AccessPaths.find(result.report, input, record("includeExternalIntents" to false))
+        assertEquals(2, paths.records("paths").map { it["targetContextRef"] }.toSet().size, Json.encode(paths))
+        assertEquals(1, launcher.records("paths").map { it["targetContextRef"] }.toSet().size)
+        assertTrue(paths.records("paths").any { it.strings("externalEntryRefs").isNotEmpty() })
+        for (bad in listOf(entries("/wrong"), entries("/invite", false)))
+            assertTrue(TransitionAnalysis.create(catalog, bad).report.records("transitions").isEmpty())
+        val fakeLifecycle = catalog + record("functions" to catalog.records("functions").map { fn ->
+            if (fn["simpleName"] == "onNewIntent") fn + record("overrideSymbols" to emptyList<String>()) else fn
+        })
+        assertTrue(TransitionAnalysis.create(fakeLifecycle, input + record("catalogFingerprint" to EntryPoints.unavailable(fakeLifecycle)["catalogFingerprint"])).report.records("transitions").isEmpty())
+        val noDelivery = catalog + record("functionBodies" to catalog.records("functionBodies").map { body ->
+            if (body.string("owner").contains("Navigator.navigate")) body + record("body" to record("op" to "BLOCK", "statements" to emptyList<Record>())) else body
+        })
+        val blockedEntries = input + record("catalogFingerprint" to EntryPoints.unavailable(noDelivery)["catalogFingerprint"])
+        assertTrue(TransitionAnalysis.create(noDelivery, blockedEntries).report.records("transitions").isEmpty(), "Parser return without a delivered stack effect must not count")
+    }
     @Test fun `conditional callback adapters preserve predicate truth and do not invent clicks`() {
         for (adapter in listOf("takeIf", "takeUnless")) for (flag in listOf("true", "false", "input")) {
             val catalog = compile("""
@@ -65,6 +132,25 @@ class CatalogCollectorTest {
         assertEquals(setOf("fixture.Detail", "fixture.Other"), edges.flatMap { it.strings("effectRefs") }.map { effects.getValue(it)["payload"].record().string("type") }.toSet(), Json.encode(report))
         assertTrue(edges.all { it.strings("effectRefs").size == 1 })
         assertEquals(setOf(true, false), edges.flatMap { it.records("guards") }.map { it["expected"] }.toSet())
+    }
+    @Test fun `unsupported builder mutations cannot leave stale callbacks reachable`() {
+        val catalog = compile("""
+            object Home
+            object Detail
+            @Composable fun App() {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> {
+                        val menu = buildList<() -> Unit> { add { stack.add(Detail) }; clear() }
+                        menu.forEach { androidx.compose.material3.Button(onClick = it) }
+                    }
+                    entry<Detail> {}
+                })
+            }
+        """.trimIndent())
+        val report = TransitionAnalysis.create(catalog).report
+        assertTrue(report.records("transitions").isEmpty())
+        assertTrue(report.records("diagnostics").any { it["code"] == "LIST_BUILDER_OPERATION_UNSUPPORTED" })
     }
     @Test fun `explicit super calls bypass overrides while ordinary calls keep dynamic dispatch`() {
         val catalog = compile("""
@@ -265,7 +351,7 @@ class CatalogCollectorTest {
     @TempDir lateinit var directory: Path
     private fun Record.strings(key: String): List<String> = (this[key] as? List<*>)?.filterIsInstance<String>().orEmpty()
 
-    private fun compile(source: String): Record {
+    private fun compile(source: String, extraSources: Map<String, String> = emptyMap()): Record {
         val annotations = directory.resolve("Annotations.kt").apply { writeText("""
             package androidx.compose.runtime
             @Target(AnnotationTarget.FUNCTION, AnnotationTarget.TYPE)
@@ -348,6 +434,7 @@ class CatalogCollectorTest {
             """,
         )
         args += diFixtures.map { (name, text) -> directory.resolve(name).apply { writeText(text.trimIndent()) }.toString() }
+        args += extraSources.map { (name, text) -> directory.resolve(name).apply { writeText(text.trimIndent()) }.toString() }
         mapOf("catalog" to "true", "catalogFile" to report.toString(), "moduleId" to "fixture:app",
             "variant" to "debug", "projectRoot" to directory.toString()).forEach { (key, value) ->
             args += listOf("-P", "plugin:dev.androidapm.compiler:$key=$value")

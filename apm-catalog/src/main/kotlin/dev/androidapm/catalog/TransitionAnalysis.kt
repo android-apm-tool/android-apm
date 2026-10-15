@@ -4,10 +4,11 @@ data class TransitionResult(val report: Record, val evidence: Record)
 
 /** Bounded source interpreter; runtime reachability and unsupported dispatch stay explicit. */
 object TransitionAnalysis {
-    const val version = "transitions-v1"
-    fun create(catalog: Record, onEvents: (String, Int, Int) -> Unit = { _, _, _ -> }, onContext: (Int, Int) -> Unit = { _, _ -> }): TransitionResult {
+    const val version = "transitions-v2"
+    fun create(catalog: Record, entries: Record = emptyMap(), onEvents: (String, Int, Int) -> Unit = { _, _, _ -> }, onContext: (Int, Int) -> Unit = { _, _ -> }): TransitionResult {
         require(catalog.strings("factsCapabilities").containsAll(setOf("CONTROL_FLOW_IR_V1", "PARAMETER_DEFAULTS_V1", "ASSIGNMENTS_V1", "EXPRESSION_CONTROL_FLOW_V1", "SUPER_CALL_TARGETS_V1"))) { "TRANSITION_FACTS_RECOLLECTION_REQUIRED" }
-        return Analyzer(catalog, onContext, onEvents).run()
+        if (entries.isNotEmpty()) require(entries["catalogFingerprint"] == fingerprint(catalog)) { "ENTRY_INPUT_PROVENANCE_MISMATCH" }
+        return Analyzer(catalog, entries, onContext, onEvents).run()
     }
     private data class Frame(val env: Map<String, Record> = emptyMap(), val guards: List<Record> = emptyList(),
         val effects: List<String> = emptyList(), val trace: List<String> = emptyList(), val uncertain: Boolean = false,
@@ -16,7 +17,7 @@ object TransitionAnalysis {
     // Avoid serializing a large captured environment at every invocation.
     private data class Invocation(val function: String, val environment: Any, val event: String?)
     private data class PendingTrigger(val id: String, val callback: Record, val frame: Frame, val context: Record)
-    private class Analyzer(val catalog: Record, val onContext: (Int, Int) -> Unit, val onEvents: (String, Int, Int) -> Unit) {
+    private class Analyzer(val catalog: Record, val entries: Record, val onContext: (Int, Int) -> Unit, val onEvents: (String, Int, Int) -> Unit) {
         val flow = FlowValues(catalog)
         val guardChecks = AccessPaths.GuardChecks()
         val evidence = linkedMapOf<String, Record>()
@@ -89,6 +90,7 @@ object TransitionAnalysis {
                 val back = h.records("arguments").firstOrNull { it["name"] == "onBack" }?.get("value").record()
                 if (back.isNotEmpty()) trigger(h, "BACK", flow.eval(back, environment), flow.constant(true), Frame(), c, emptySet(), 0)
             }
+            registerExternalIntents()
             // Register subscriptions before interpreting emissions. Source order
             // of a Button and its LaunchedEffect must not change the graph.
             collectingEvents = true
@@ -142,6 +144,33 @@ object TransitionAnalysis {
             problem(if (depth > 384) "CONTROL_FLOW_DEPTH_LIMIT" else "CONTROL_FLOW_VISIT_LIMIT", analysisContext, analysisContext)
             false
         } else true
+        fun registerExternalIntents() {
+            entries.records("entries").forEach { entry ->
+                val inputs = ExternalIntents.candidates(entry)
+                if (inputs.isEmpty()) return@forEach
+                val handler = flow.functions.values.singleOrNull { fn -> fn["classOwner"] == entry["targetActivity"] && fn["simpleName"] == "onNewIntent" &&
+                    fn.strings("overrideSymbols").any { symbol -> listOf("android.app.Activity.onNewIntent(", "androidx.activity.ComponentActivity.onNewIntent(").any(symbol::startsWith) } &&
+                    fn.records("parameters").count { it.string("kind").uppercase() == "REGULAR" && it.string("type").removeSuffix("?") == "android.content.Intent" } == 1 } ?: return@forEach
+                problem("EXTERNAL_INPUT_DOMAIN_BOUNDED", entry.string("id"), detail = "Concrete manifest-derived warm inputs only; cold starts, arbitrary URI arguments and Android delivery are not proven")
+                contexts.filter { it.string("hostRef") in entry.strings("hostRefs") }.forEach { c ->
+                    inputs.forEach { input ->
+                        val id = "external:" + fingerprint(record("entry" to entry["id"], "input" to input, "context" to c["id"]))
+                        val activity = record("kind" to "INSTANCE", "identity" to "activity:" + entry.string("targetActivity"), "type" to entry["targetActivity"])
+                        val env = hostEnvironments[c.string("hostRef")].orEmpty() + mapOf("@context" to record("ref" to c["id"]), "@activityOwner" to record("kind" to "ACTIVITY_OWNER", "identity" to activity["identity"])) +
+                            handler.records("parameters").associate { p -> p.string("ref") to when {
+                                p.string("kind").uppercase().contains("DISPATCH") -> activity
+                                p.string("type").removeSuffix("?") == "android.content.Intent" -> input
+                                else -> flow.unknown("EXTERNAL_CALLBACK_ARGUMENT_UNRESOLVED", p.string("ref"))
+                            } }
+                        val delivery = record("kind" to "EXTERNAL_INTENT_DELIVERY", "entryRef" to entry["id"], "callbackRef" to handler["symbol"], "hostRef" to c["hostRef"], "inputIntent" to input,
+                            "lifecycle" to "WARM_EXISTING_ACTIVITY", "delivery" to "CONDITIONAL_NOT_OBSERVED")
+                        val guard = record("test" to record("kind" to "PREDICATE", "operation" to "ANDROID_WARM_INTENT_DELIVERED", "entryRef" to entry["id"], "inputIntent" to input), "expected" to true, "mutableState" to true)
+                        val call = record("id" to id, "externalEntryRef" to entry["id"], "externalInput" to input)
+                        trigger(call, "EXTERNAL_INTENT", flow.closure(handler.string("symbol"), env), flow.constant(true), Frame(env = env, guards = listOf(guard), trace = listOf(proof(delivery))), c, emptySet(), 0)
+                    }
+                }
+            }
+        }
         fun invoke(fn: Record, args: List<Record>, parent: Frame, c: Record, event: String?, seen: Set<Invocation>, depth: Int): List<Frame> {
             if (!budget(depth)) return listOf(parent.copy(uncertain = true, stop = "LIMIT"))
             val ref = fn.string("ref")
@@ -270,6 +299,7 @@ object TransitionAnalysis {
             val name = call.string("name")
             val args = flow.arguments(call, f.env)
             val next = f.copy(trace = f.trace + proof(record("kind" to "CALL", "callRef" to call["id"], "source" to call["source"], "target" to call["target"])))
+            ExternalIntents.value(name, args)?.let { value -> return listOf(next.copy(value = value, env = next.env + ("@evaluated:" + call.string("id") to value))) }
             if (name == "androidx.navigation3.ui.NavDisplay") {
                 val stack = args["backStack"].orEmpty()
                 val old = hostStacks[call.string("id")]
@@ -356,6 +386,10 @@ object TransitionAnalysis {
                 val value = flow.eval(regular.single()["value"].record(), f.env)
                 val updated = list + record("items" to list.records("items") + value)
                 return listOf(next.copy(value = flow.constant(true), env = next.env + (key to updated) + ("@evaluated:" + call.string("id") to flow.constant(true))))
+            }
+            if (instance?.get("kind") == "LIST_BUILDER" && name.startsWith("kotlin.collections.")) {
+                problem("LIST_BUILDER_OPERATION_UNSUPPORTED", call.string("id"), c.string("id"))
+                return listOf(next.copy(uncertain = true, stop = "UNSUPPORTED_EFFECT"))
             }
             if (name in setOf("kotlin.collections.forEach", "kotlin.collections.forEachIndexed") && instance?.get("kind") == "LIST_VALUE") {
                 val callback = args["action"].orEmpty()
@@ -512,7 +546,7 @@ object TransitionAnalysis {
             val id = "trigger:" + fingerprint(record("context" to c["id"], "call" to call["id"], "callback" to callback, "enabled" to enabled, "guards" to f.guards))
             if (id in triggers) return
             triggers[id] = record("id" to id, "originContextRef" to c["id"], "kind" to kind, "callRef" to call["id"],
-                "callbackRef" to callback["ref"], "enabled" to enabled, "guards" to f.guards, "evidenceRefs" to f.trace)
+                "callbackRef" to callback["ref"], "enabled" to enabled, "guards" to f.guards, "evidenceRefs" to f.trace) + call.filterKeys { it in setOf("externalEntryRef", "externalInput") }
             val active = assume(f.copy(effects = emptyList()), enabled, true) ?: return
             pendingTriggers += PendingTrigger(id, callback, active, c)
         }
@@ -539,7 +573,7 @@ object TransitionAnalysis {
                     "targetContextRefs" to targets.map { it["id"] }, "dynamicTarget" to if (dynamic) "PREVIOUS_STACK_ENTRY" else null,
                     "linkage" to if (targets.isEmpty() && !dynamic) "UNRESOLVED" else if (plan.uncertain || plan.guards.isNotEmpty() || dynamic || targets.size != 1) "MAY" else "RESOLVED_IN_MODEL",
                     "conditions" to if (plan.guards.isEmpty()) "NO_KNOWN_CONTRADICTION" else "UNKNOWN", "guards" to plan.guards,
-                    "completion" to plan.stop.ifEmpty { "NORMAL_IN_MODELED_FLOW" }, "observation" to "NOT_OBSERVED", "evidenceRefs" to plan.trace)
+                    "completion" to plan.stop.ifEmpty { "NORMAL_IN_MODELED_FLOW" }, "observation" to "NOT_OBSERVED", "evidenceRefs" to plan.trace) + triggers.getValue(id).filterKeys { it in setOf("externalEntryRef", "externalInput") }
             }
         }
     }

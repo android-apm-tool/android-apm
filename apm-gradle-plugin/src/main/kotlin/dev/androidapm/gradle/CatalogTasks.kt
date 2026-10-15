@@ -234,6 +234,7 @@ internal fun registerCatalogTasks(project: Project, artifact: SubpluginArtifact)
             it.factsFile.set(merge.flatMap { task -> task.linkingFile })
             it.entryPointsFile.set(project.layout.buildDirectory.file("reports/android-apm/catalog/debug/entry-points.json"))
         }
+        linkTransitions.configure { it.entryPointsFile.set(entries.flatMap { task -> task.entryPointsFile }) }
         project.tasks.register("apmFindDebugAccessPaths", FindAccessPathsTask::class.java) {
             it.group = "android apm"
             it.description = "Explores bounded access paths; optionally set -Papm.accessQuery=<file>."
@@ -241,6 +242,7 @@ internal fun registerCatalogTasks(project: Project, artifact: SubpluginArtifact)
             it.entryPointsFile.set(entries.flatMap { task -> task.entryPointsFile })
             it.queryFile.set(project.layout.file(project.providers.gradleProperty("apm.accessQuery").map { path -> project.rootProject.file(path) }))
             it.pathsFile.set(project.layout.buildDirectory.file("reports/android-apm/catalog/debug/access-paths.json"))
+            it.launcherPathsFile.set(project.layout.buildDirectory.file("reports/android-apm/catalog/debug/launcher-access-paths.json"))
         }
         project.tasks.register("apmMatchDebugDesign", MatchDesignTask::class.java) {
             it.group = "android apm"

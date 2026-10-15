@@ -166,7 +166,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
 
     fun eval(expr: Record, env: Map<String, Record> = emptyMap(), depth: Int = 0, seen: Set<String> = emptySet()): Record {
         if (expr["kind"] == "CONSTANT") return constant(expr["value"])
-        if (expr["kind"] in setOf("ENUM", "SYMBOLIC", "INSTANCE", "STACK", "STREAM", "LIST_VALUE", "LIST_BUILDER", "MAP_VALUE", "UNKNOWN", "PREDICATE", "OPAQUE", "COMPOSITION_LOCAL", "PROVIDED_LOCAL", "PAIR", "TYPE", "RESULT_VALUE", "ACTIVITY_OWNER", "ACTIVITY_LAUNCHER")) return expr
+        if (expr["kind"] in setOf("ENUM", "SYMBOLIC", "INSTANCE", "STACK", "STREAM", "LIST_VALUE", "LIST_BUILDER", "MAP_VALUE", "UNKNOWN", "PREDICATE", "OPAQUE", "COMPOSITION_LOCAL", "PROVIDED_LOCAL", "PAIR", "TYPE", "RESULT_VALUE", "ACTIVITY_OWNER", "ACTIVITY_LAUNCHER", "INTENT", "URI")) return expr
         // Parameter binding fills a mutable map incrementally. A cache key must
         // retain the environment at evaluation time, not a later mutation.
         val key = EvalKey(expr, snapshot(env), depth, seen)
@@ -247,6 +247,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                 if (key in seen) return unknown("RECURSIVE_VALUE", call.string("id"))
                 val args = call.records("arguments").associate { it.string("name") to eval(it["value"].record(), env, depth + 1, seen + key) }
                 val name = call.string("name")
+                ExternalIntents.value(name, args)?.let { return it }
                 when {
                     name == "androidx.activity.compose.<get-LocalActivity>" -> record("kind" to "COMPOSITION_LOCAL", "identity" to "androidx.activity.compose.LocalActivity")
                     name in setOf("androidx.compose.runtime.compositionLocalOf", "androidx.compose.runtime.staticCompositionLocalOf") -> record("kind" to "COMPOSITION_LOCAL", "identity" to call["id"])
@@ -325,7 +326,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                     name in setOf("kotlin.internal.ir.EQEQ", "kotlin.internal.ir.EQEQEQ", "kotlin.Boolean.not") -> {
                         val list = args.values.toList()
                         if (list.all { it["kind"] == "CONSTANT" }) constant(if (name.endsWith(".not")) list.first()["value"] != true else list.getOrNull(0)?.get("value") == list.getOrNull(1)?.get("value"))
-                        else if (!name.endsWith(".not") && list.size == 2 && list.any { it == constant(null) } && list.any { it["kind"] in setOf("INSTANCE", "FUNCTION", "STACK", "STREAM", "MAP_VALUE", "LIST_VALUE") }) constant(false)
+                        else if (!name.endsWith(".not") && list.size == 2 && list.any { it == constant(null) } && list.any { it["kind"] in setOf("INSTANCE", "FUNCTION", "STACK", "STREAM", "MAP_VALUE", "LIST_VALUE", "INTENT", "URI") }) constant(false)
                         else if (!name.endsWith(".not") && list.size == 2 && list.all { it["kind"] == "INSTANCE" && it.string("identity").startsWith("object:") } &&
                             (name.endsWith(".EQEQEQ") || standardEquality(list[0].string("type")))) constant(list[0]["identity"] == list[1]["identity"])
                         // Source hierarchies without custom equals use identity or

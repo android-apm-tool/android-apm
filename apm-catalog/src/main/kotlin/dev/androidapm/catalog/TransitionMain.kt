@@ -24,15 +24,16 @@ object TransitionMain {
         generate(facts, args[1], args[2], query)
     }
     private fun generate(facts: Record, manifest: String, directory: String, query: Record) {
-        val result = TransitionReports.compact(TransitionAnalysis.create(facts, onEvents = { stage, index, total -> println("Android APM transitions: $stage $index/$total") }) { index, total -> println("Android APM transitions: context $index/$total") })
         val entries = Files.newInputStream(Path.of(manifest)).use { EntryPoints.collect(it, facts) }
+        val result = TransitionReports.compact(TransitionAnalysis.create(facts, entries, onEvents = { stage, index, total -> println("Android APM transitions: $stage $index/$total") }) { index, total -> println("Android APM transitions: context $index/$total") })
         val paths = AccessPaths.find(result.report, entries, query)
+        val launcherPaths = AccessPaths.find(result.report, entries, query + record("includeExternalIntents" to false))
         val output = Path.of(directory)
         require(!Files.exists(output)) { "OUTPUT_GENERATION_ALREADY_EXISTS" }
         Files.createDirectories(output)
         Files.newBufferedWriter(output.resolve("linked-facts.json")).use { Json.write(facts, it) }
         mapOf("transitions.json" to result.report, "transition-evidence.json" to result.evidence,
-            "entry-points.json" to entries, "access-paths.json" to paths).forEach { (name, value) ->
+            "entry-points.json" to entries, "access-paths.json" to paths, "launcher-access-paths.json" to launcherPaths).forEach { (name, value) ->
             Files.newBufferedWriter(output.resolve(name)).use { Json.write(value, it, pretty = true); it.append('\n') }
         }
         println(Json.encode(record("status" to "COMPLETED", "summary" to result.report["summary"], "coverage" to paths["coverage"])))

@@ -11,10 +11,11 @@ import java.nio.file.StandardCopyOption
 @CacheableTask
 abstract class LinkTransitionsTask : DefaultTask() {
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val factsFile: RegularFileProperty
+    @get:InputFile @get:Optional @get:PathSensitive(PathSensitivity.NONE) abstract val entryPointsFile: RegularFileProperty
     @get:OutputFile abstract val transitionsFile: RegularFileProperty
     @get:OutputFile abstract val evidenceFile: RegularFileProperty
     @TaskAction fun link() {
-        val result = TransitionReports.compact(TransitionAnalysis.create(read(factsFile), onEvents = { stage, index, total -> logger.lifecycle("Android APM transitions: $stage $index/$total") }) { index, total -> logger.lifecycle("Android APM transitions: context $index/$total") })
+        val result = TransitionReports.compact(TransitionAnalysis.create(read(factsFile), if (entryPointsFile.isPresent) read(entryPointsFile) else emptyMap(), onEvents = { stage, index, total -> logger.lifecycle("Android APM transitions: $stage $index/$total") }) { index, total -> logger.lifecycle("Android APM transitions: context $index/$total") })
         publish(evidenceFile, result.evidence)
         publish(transitionsFile, result.report)
         logger.lifecycle("Android APM transitions: ${transitionsFile.get().asFile.absolutePath}")
@@ -42,9 +43,15 @@ abstract class FindAccessPathsTask : DefaultTask() {
     @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val entryPointsFile: RegularFileProperty
     @get:InputFile @get:Optional @get:PathSensitive(PathSensitivity.NONE) abstract val queryFile: RegularFileProperty
     @get:OutputFile abstract val pathsFile: RegularFileProperty
+    @get:OutputFile abstract val launcherPathsFile: RegularFileProperty
     @TaskAction fun explore() {
         val query = if (queryFile.isPresent) read(queryFile) else emptyMap()
-        publish(pathsFile, AccessPaths.find(read(transitionsFile), read(entryPointsFile), query))
+        val transitions = read(transitionsFile)
+        val entries = read(entryPointsFile)
+        val paths = AccessPaths.find(transitions, entries, query)
+        val launcher = AccessPaths.find(transitions, entries, query + record("includeExternalIntents" to false))
+        publish(launcherPathsFile, launcher)
+        publish(pathsFile, paths)
         logger.lifecycle("Android APM access paths: ${pathsFile.get().asFile.absolutePath}")
     }
 }

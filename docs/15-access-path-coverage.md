@@ -2,7 +2,7 @@
 
 ## 목표와 분모
 
-룰업의 이전 검증에서는 등록·렌더링이 입증된 화면 문맥 48개 중 25개에 launcher 경로를 제시했다. 52.1%는 정적 모델의 경로 발견 범위이며 정탐률이나 화면 수집 재현율이 아니다. 이번 인수 목표는 같은 48개 문맥 중 최소 46개(95.8%)에 근거를 갖춘 경로를 제시하는 것이다. 미해결 문맥을 분모에서 제외하거나, 디자인 프레임 수와 등록 문맥 수를 혼합하지 않는다.
+룰업의 이전 검증에서는 등록·렌더링이 입증된 화면 문맥 48개 중 25개에 launcher 경로를 제시했다. 52.1%는 정적 모델의 경로 발견 범위이며 정탐률이나 화면 수집 재현율이 아니다. 인수 목표는 같은 48개 문맥 중 최소 46개(95.8%)에 근거를 갖춘 경로를 제시하는 것이다. 외부 초대 링크 전용 화면도 있으므로 사용자와 합의한 전체 지표에는 입증된 외부 링크 경로를 포함한다. launcher만의 발견률과 전체 진입점 발견률은 별도로 집계한다. 미해결 문맥을 분모에서 제외하거나, 디자인 프레임 수와 등록 문맥 수를 혼합하지 않는다.
 
 기존 미발견 23개를 연결 그래프로 점검했을 때 6개는 조건·백스택을 무시한 그래프 연결만 있었고, 12개는 해석된 유입 연결이 없었으며, 5개는 유입 연결이 launcher에서 이어지지 않았다. 조건을 제거한 그래프 연결은 인수 성공으로 계산하지 않는다. 이 분류는 원인을 좁히는 진단이며 실제 접근 불가의 증명이 아니다.
 
@@ -39,7 +39,29 @@ Kotlin IR의 fake override에는 실행 본문이 없다. 수집기는 해당 �
 
 격리된 룰업 JVM의 스레드 진단에서는 반복 호출의 캡처 정보를 fingerprint로 만들 때 JSON 문자열을 한 글자씩 쓰는 비용을 확인했다. escaping이 필요 없는 구간은 한 번에 기록하도록 바꿨다. 긴 한글·이모지·제어 문자 문자열의 UTF-8 바이트와 canonical hash를 고정 기대값과 비교한다. JSON 형식과 기존 식별자는 바뀌지 않는다.
 
-### 탐색 예산
+### 조건부 콜백과 데이터로 만든 메뉴
+
+`takeIf`/`takeUnless`가 반환하는 callback은 predicate의 결과에 따라 원래 receiver 또는 null이다. predicate를 실제 소스 본문으로 해석하고 두 반환값에 상반된 조건을 붙인다. 이름이 같은 사용자 함수에 이 규칙을 적용하지 않는다. 상수 false 조건과 null callback은 트리거가 되지 않는다. 의미는 [Kotlin takeIf 계약](https://kotlinlang.org/api/core/kotlin-stdlib/kotlin/take-if.html)을 따른다.
+
+`buildList`는 호출마다 별도 builder 상태를 갖는다. 지원하는 `add(element)`를 순서대로 적용하고, 반환된 목록을 `forEach`/`forEachIndexed`에 전달할 때 각 실제 항목과 callback 캡처를 유지한다. 분기·조기 return·빈 목록을 구분한다. 만들기만 하고 렌더링하지 않은 항목은 클릭 가능한 것으로 계산하지 않는다. 미지원 builder 변경(clear, indexed add 등)을 만나면 중단한다. 이전 목록으로 계속 진행하면 이미 지운 메뉴를 접근 가능하다고 오판하기 때문이다.
+
+### 입증된 외부 링크 경로
+
+외부 링크를 등록 화면에 직접 연결하지 않는다. 실제 merged Manifest의 VIEW·DEFAULT·BROWSABLE filter에서 구체적인 URI 입력을 만들고, 해당 Activity의 Android lifecycle override인 `onNewIntent` 본문에 Intent 값을 전달한다. URI 파서와 조건 분기를 해석한 결과가 기존 Channel·host 소유권 검사와 순서 있는 stack 효과까지 이어져야 전환이 된다. Manifest 수신 선언이나 파서 반환값만으로는 경로가 생기지 않는다.
+
+현재 지원 범위는 이미 실행 중인 동일 Activity에 전달되는 singleTask/singleTop 입력이다. 시작 상태는 입증된 launcher 경로로 확보한다. `ANDROID_WARM_INTENT_DELIVERED` 조건 및 `EXTERNAL_INTENT_DELIVERY` 근거에 entry, 입력 Intent, lifecycle callback, host를 남긴다. 로그인·계정 상태·서버 성공 조건도 제거하지 않는다. 외부 입력을 포함한 경로는 `LAUNCHER_THEN_WARM_EXTERNAL_INTENT`로 표시하며 cold start 성공으로 표현하지 않는다. Android 전달과 도메인 검증은 관측하지 않았다.
+
+입력 생성은 단순 scheme·host·port·정확한 path·pathPrefix에서 최대 64개로 제한한다. 토큰 위치에는 합성 문자열을 사용하며 실제 초대 토큰을 가져오거나 서버에 요청하지 않는다. wildcard host, MIME, advanced pattern, percent-encoding, query 인자, permission 제한, 미지원 launchMode는 자동 연결하지 않는다. `EXTERNAL_INPUT_DOMAIN_BOUNDED` 진단은 이 입력 집합 밖의 완전성을 보장하지 않음을 나타낸다. 근거는 [Android Intent filter](https://developer.android.com/guide/components/intents-filters)와 [data 요소 규칙](https://developer.android.com/guide/topics/manifest/data-element)이다.
+
+`access-paths.json`은 외부 링크를 포함한 경로를, `launcher-access-paths.json`은 외부 링크 없이 찾은 경로를 기록한다. 동일한 화면 문맥 48개를 두 파일의 분모로 사용한다. 쿼리의 `includeExternalIntents=false`로 외부 전환을 제외할 수 있다.
+
+### 근거 크기와 무손실 공유
+
+큰 앱에서는 동일 조건과 호출 이력이 수많은 효과·전환에 반복되어 JSON이 수 GB가 됐다. `SHARED_CONDITIONS_TRACES_V1`은 조건을 `PREDICATE_REF`로 참조하고 원식을 evidence의 `PREDICATE_DEFINITION`에 한 번 기록한다. Boolean not의 정규화와 expected 값, mutableState 및 version을 함께 보존한다. 상수 조건은 inline으로 남겨 false 조건 제거가 유지된다.
+
+전체 호출 이력은 `traceRef`부터 `TRACE_NODE.previousRef`를 역으로 따라가 복원한다. 순서와 반복을 모두 보존한다. `evidenceRefs`는 직접 호출 및 비동기 전달 근거를 편하게 읽기 위한 일부 참조이며, 전체 이력을 대신하지 않는다. 최종 전환이 참조하지 않는 임시 효과만 제거한다. 미완료 전환의 효과는 진단용으로 유지한다. 테스트는 압축 전후 발견 목적지·경로 단계, 조건 모순, 상태 버전, 전체 이력 복원, 끊어진 참조와 순환 거부를 비교한다.
+
+### 탐색 예산과 완료 조건
 
 기존 단일 BFS 큐는 한 화면의 많은 조건 분기를 먼저 소비해 다른 화면의 확장을 늦췄다. 새 탐색은 현재 보이는 화면 문맥별 큐를 두고 확장 횟수가 적은 큐부터 처리한다. 같은 조건 집합의 나열 순서도 상태의 차이로 계산하지 않는다.
 
@@ -58,6 +80,8 @@ flowchart TD
     R --> Q[트리거 보관 및 구독 선등록]
     Q --> E[receiver·callback·Channel·Activity 결과 전달]
     E --> T[조건과 순서가 있는 stack 효과]
+    M --> X[Manifest URI 입력과 warm lifecycle override]
+    X --> E
     M[실제 merged Manifest] --> P[launcher 초기 상태]
     T --> F[화면별로 예산을 나누는 경로 탐색]
     P --> F
