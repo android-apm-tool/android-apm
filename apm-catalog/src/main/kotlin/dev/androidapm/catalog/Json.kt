@@ -15,12 +15,19 @@ object Json {
         null -> output.append("null")
         is String -> {
             output.append('"')
-            value.forEach { c ->
-                output.append(when (c) {
+            var start = 0
+            value.forEachIndexed { index, c ->
+                val escaped = when (c) {
                     '"' -> "\\\""; '\\' -> "\\\\"; '\n' -> "\\n"; '\r' -> "\\r"; '\t' -> "\\t"
-                    else -> if (c.code < 32) "\\u%04x".format(c.code) else c.toString()
-                })
+                    else -> if (c.code < 32) "\\u%04x".format(c.code) else null
+                }
+                if (escaped != null) {
+                    if (start < index) output.append(value, start, index)
+                    output.append(escaped)
+                    start = index + 1
+                }
             }
+            if (start < value.length) output.append(value, start, value.length)
             output.append('"')
         }
         is Boolean -> output.append(value.toString())
