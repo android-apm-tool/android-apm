@@ -24,6 +24,7 @@ object TransitionAnalysis {
     private data class RenderOutcome(val environment: Any, val value: Record, val effects: List<String>, val stop: String, val uncertain: Boolean)
     private class Analyzer(val catalog: Record, val entries: Record, val diagnosticContextRefs: Set<String>, val limits: TransitionLimits, val onContext: (Int, Int) -> Unit, val onEvents: (String, Int, Int) -> Unit) {
         val flow = FlowValues(catalog)
+        val liveness = RenderLiveness(flow)
         val guardChecks = AccessPaths.GuardChecks()
         val evidence = linkedMapOf<String, Record>()
         val contexts = mutableListOf<Record>()
@@ -188,6 +189,7 @@ object TransitionAnalysis {
             val declaration = flow.functions[ref]
             val body = flow.bodies[ref]
             if (declaration == null || body == null) { problem("FUNCTION_BODY_UNAVAILABLE", ref, c.string("id")); return listOf(parent.copy(uncertain = true)) }
+            if (event == null) liveness.prepare(ref)
             val env = (flow.closures[fn.string("closureId")].orEmpty() + parent.env.filterKeys { it.startsWith("@list:") }).toMutableMap()
             declaration.records("parameters").filter { it.string("ref") !in fn.strings("boundParameterRefs") }.forEachIndexed { i, p ->
                 if (i < args.size) env[p.string("ref")] = args[i]
@@ -217,7 +219,7 @@ object TransitionAnalysis {
         /** Keep actual witnesses, never weaken their guards to join partial paths.
          * Child triggers have already been registered with their complete guards.
          * Different returned values, heap state, effects and exits never share a quota. */
-        fun renderContinuations(frames: List<Frame>, ref: String, context: Record): List<Frame> {
+        fun renderContinuations(frames: List<Frame>, ref: Any?, context: Record): List<Frame> {
             if (frames.size <= limits.renderContinuationsPerOutcome) return frames
             val counts = mutableMapOf<RenderOutcome, Int>()
             return frames.filter { frame ->
@@ -226,7 +228,7 @@ object TransitionAnalysis {
                 counts[key] = count + 1
                 if (count >= limits.renderContinuationsPerOutcome) {
                     truncated = true; cutoffs++
-                    problem("RENDER_CONTINUATION_BUDGET_EXCEEDED", ref, context.string("id"))
+                    problem("RENDER_CONTINUATION_BUDGET_EXCEEDED", ref as? String ?: fingerprint(ref), context.string("id"))
                     false
                 } else true
             }
@@ -235,7 +237,7 @@ object TransitionAnalysis {
             if (!budget(depth, stmt["source"], event)) return listOf(f.copy(uncertain = true, stop = "LIMIT"))
             return when (stmt.string("op")) {
                 "BLOCK" -> stmt.records("statements").fold(listOf(f)) { states, child ->
-                    bounded(states.flatMap { state ->
+                    val advanced = states.flatMap { state ->
                         if (state.stop.isNotEmpty()) listOf(state) else {
                             fun clean(env: Map<String, Record>) = env.filterKeys { !it.startsWith("@evaluated:") && !it.startsWith("@choice:") && !it.startsWith("@expression:") }
                             val before = cutoffs
@@ -243,13 +245,14 @@ object TransitionAnalysis {
                             val paths = walk(child, input, c, event, seen, depth + 1).map { path ->
                                 // A statement's discarded call result and expression-local
                                 // alternatives cannot constrain the next statement.
-                                if (path.stop.isEmpty()) path.copy(env = clean(path.env), value = input.value) else path
+                                if (path.stop.isEmpty()) path.copy(env = clean(path.env) - (if (event == null) liveness.deadAfter(child) else emptySet()), value = input.value) else path
                             }
                             if (event == null && before == cutoffs && paths.isNotEmpty() && paths.all { it.stop.isEmpty() && it.effects == input.effects } &&
                                 paths.map { it.env }.distinct().size == 1)
                                 listOf(input.copy(env = paths.first().env, uncertain = input.uncertain || paths.any { it.uncertain })) else paths
                         }
-                    })
+                    }
+                    bounded(if (event == null) renderContinuations(advanced, child["source"], c) else advanced)
                 }
                 "DECLARE", "WRITE" -> expression(stmt["value"].record(), f, c, event, seen, depth + 1).map {
                     if (it.stop.isNotEmpty()) it else it.copy(env = it.env + (stmt.string("ref") to flow.eval(stmt["value"].record(), it.env)))

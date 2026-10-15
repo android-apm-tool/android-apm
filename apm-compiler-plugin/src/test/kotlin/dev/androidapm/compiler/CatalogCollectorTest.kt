@@ -12,6 +12,35 @@ import java.nio.file.Path
 import kotlin.io.path.*
 
 class CatalogCollectorTest {
+    @Test fun `dead render labels release branch state while a later callback retains its captured destination`() {
+        val decorations = (0..11).joinToString("\n") { "val label$it = if (input > $it) \"a\" else \"b\"; androidx.compose.material3.Text(label$it)" }
+        for (declaration in listOf("val action = { stack.add(destination); Unit }",
+            "val handler = object { fun send() { stack.add(destination) } }; val action = handler::send",
+            "fun send() { stack.add(destination) }; val action = ::send")) {
+        val catalog = compile("""
+            object Home
+            object Detail
+            object Other
+            @Composable fun App(input: Int, choice: Boolean) {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> {
+                        val destination = if (choice) Detail else Other
+                        $declaration
+                        $decorations
+                        androidx.compose.material3.Button(onClick = action)
+                    }
+                    entry<Detail> {}
+                    entry<Other> {}
+                })
+            }
+        """.trimIndent(), mapOf("RenderText.kt" to "package androidx.compose.material3\n@androidx.compose.runtime.Composable fun Text(text: String) {}"))
+        val result = TransitionAnalysis.create(catalog, limits = TransitionLimits(renderVisits = 5_000)).report
+        val effects = result.records("effects").associateBy { it["id"] }
+        assertEquals(setOf("fixture.Detail", "fixture.Other"), result.records("transitions").flatMap { it.strings("effectRefs") }.map { effects.getValue(it)["payload"].record().string("type") }.toSet(), Json.encode(result))
+        assertFalse(result.records("diagnostics").any { it["code"] == "CONTROL_FLOW_VISIT_LIMIT" })
+        }
+    }
     @Test fun `render continuation sampling retains real guards and keeps distinct return outcomes`() {
         val cases = (0..11).joinToString("\n") { "$it -> \"shared\"" }
         val catalog = compile("""
