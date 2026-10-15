@@ -321,7 +321,10 @@ internal class CatalogCollector(
         is IrClass -> declaration.fqNameWhenAvailable?.asString() ?: "$module:${relative(file.fileEntry.name)}@${declaration.startOffset}:class"
         is IrFunction -> {
             val name = declaration.fqNameWhenAvailable?.asString()
-            val prefix = if (declaration.name.isSpecial && declaration !is IrConstructor || name == null ||
+            // Accessors have special names too, but public/member accessors are
+            // declarations shared across modules, not source-local lambdas.
+            val accessor = declaration is IrSimpleFunction && declaration.correspondingPropertySymbol != null
+            val prefix = if (declaration.name.isSpecial && declaration !is IrConstructor && !accessor || name == null ||
                 declaration.parent is IrFunction || declaration.parent is IrFile && declaration.visibility == DescriptorVisibilities.PRIVATE) {
                 module + ":" + relative(declaration.fileOrNull?.fileEntry?.name ?: file.fileEntry.name) + "@" + declaration.startOffset + ":" + declaration.name
             } else name

@@ -38,6 +38,8 @@ object TransitionAnalysis {
                 providerHosts.getOrPut(it) { sortedSetOf() }.add(b.string("hostId"))
             } }
             catalog.records("uiRoots").forEach { root ->
+                visits = 0
+                flow.beginContext("root:" + root.string("id"))
                 val c = record("id" to "root:" + root.string("id"), "hostRef" to "", "root" to true)
                 val content = root.records("arguments").firstOrNull { it["name"] == "content" }?.get("value").record()
                 val fn = flow.eval(content, mapOf("@context" to record("ref" to c["id"])))
@@ -50,6 +52,7 @@ object TransitionAnalysis {
                 if (catalog.records("uiRoots").isEmpty()) hostStacks.putIfAbsent(h.string("id"), flow.eval(h.records("arguments").firstOrNull { it["name"] == "backStack" }?.get("value").record()))
             }
             catalog.records("entryBindings").forEach { b ->
+                flow.beginContext("provider:" + b.string("id"))
                 val hosts = providerHosts[b.string("providerId")].orEmpty()
                 if (hosts.isEmpty()) problem("DESTINATION_HOST_UNRESOLVED", b.string("id"))
                 hosts.forEach { h ->
@@ -60,6 +63,8 @@ object TransitionAnalysis {
             }
             catalog.records("screenCandidates").forEach { problem("DESTINATION_BINDING_UNRESOLVED", it.string("id"), detail = "Content storage requires lookup/render proof") }
             contexts.forEach { c ->
+                visits = 0
+                flow.beginContext(c.string("id"))
                 val environment = hostEnvironments[c.string("hostRef")].orEmpty() + mapOf("@context" to record("ref" to c["id"]))
                 val fn = flow.eval(c["content"].record(), environment)
                 if (fn["kind"] == "FUNCTION") invoke(fn, c.records("entryArguments"), Frame(), c, null, emptySet(), 0)

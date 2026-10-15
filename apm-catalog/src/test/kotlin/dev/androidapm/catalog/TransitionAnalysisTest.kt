@@ -4,6 +4,18 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class TransitionAnalysisTest {
+    @Test fun `memoized values preserve environments and one exhausted context cannot starve another`() {
+        val flow = FlowValues(emptyMap(), evaluationLimit = 2)
+        flow.beginContext("first")
+        val expr = record("kind" to "REFERENCE", "ref" to "argument")
+        repeat(100) { assertEquals(constant("one"), flow.eval(expr, mapOf("argument" to constant("one")))) }
+        assertEquals(constant("two"), flow.eval(expr, mapOf("argument" to constant("two"))))
+        assertEquals("UNKNOWN", flow.eval(expr, mapOf("argument" to constant("three")))["kind"])
+        flow.beginContext("second")
+        assertEquals(constant("three"), flow.eval(expr, mapOf("argument" to constant("three"))))
+        assertTrue(flow.truncated)
+        assertTrue(flow.diagnostics.values.any { it["originRef"] == "first" })
+    }
     private fun constant(v: Any?) = record("kind" to "CONSTANT", "value" to v)
     private fun reference(v: String) = record("kind" to "REFERENCE", "ref" to v)
     private fun function(v: String) = record("kind" to "FUNCTION", "ref" to v)

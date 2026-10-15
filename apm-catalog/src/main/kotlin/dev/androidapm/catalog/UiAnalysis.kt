@@ -7,7 +7,7 @@ import java.io.OutputStreamWriter
 
 internal fun fingerprint(value: Any?): String {
     val digest = MessageDigest.getInstance("SHA-256")
-    OutputStreamWriter(DigestOutputStream(OutputStream.nullOutputStream(), digest), Charsets.UTF_8).use { Json.write(value, it) }
+    OutputStreamWriter(DigestOutputStream(OutputStream.nullOutputStream(), digest), Charsets.UTF_8).buffered().use { Json.write(value, it) }
     return digest.digest().take(16).joinToString("") { "%02x".format(it) }
 }
 

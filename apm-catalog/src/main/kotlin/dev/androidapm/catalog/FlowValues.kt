@@ -1,7 +1,7 @@
 package dev.androidapm.catalog
 
 /** Bounded, explicit value provenance. No target code is loaded or executed. */
-internal class FlowValues(val catalog: Record) {
+internal class FlowValues(val catalog: Record, private val evaluationLimit: Int = 300_000) {
     val functions = catalog.records("functions").associateBy { it.string("symbol") }
     val calls = catalog.records("callRelations").associateBy { it.string("id") }
     val values = catalog.records("values").associateBy { it.string("ref") }
@@ -13,6 +13,16 @@ internal class FlowValues(val catalog: Record) {
     val diagnostics = linkedMapOf<String, Record>()
     val injection = InjectionModel(this)
     private var evaluations = 0
+    private var context = ""
+    private data class EvalKey(val expression: Record, val environment: Map<String, Record>, val depth: Int, val seen: Set<String>)
+    private val memo = object : LinkedHashMap<EvalKey, Record>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<EvalKey, Record>?) = size > 20_000
+    }
+    fun beginContext(ref: String) {
+        context = ref
+        evaluations = 0
+        memo.clear()
+    }
     var truncated = false
         private set
 
@@ -79,7 +89,14 @@ internal class FlowValues(val catalog: Record) {
         call.records("arguments").associate { it.string("name") to eval(it["value"].record(), env) }
 
     fun eval(expr: Record, env: Map<String, Record> = emptyMap(), depth: Int = 0, seen: Set<String> = emptySet()): Record {
-        if (depth > 36 || ++evaluations > 300_000) { truncated = true; return unknown("VALUE_BUDGET_EXCEEDED") }
+        if (expr["kind"] == "CONSTANT") return constant(expr["value"])
+        if (expr["kind"] in setOf("ENUM", "SYMBOLIC", "INSTANCE", "STACK", "STREAM", "LIST_VALUE", "MAP_VALUE", "UNKNOWN", "PREDICATE", "OPAQUE", "COMPOSITION_LOCAL", "PROVIDED_LOCAL", "PAIR", "TYPE")) return expr
+        val key = EvalKey(expr, env, depth, seen)
+        memo[key]?.let { return it }
+        if (depth > 36 || ++evaluations > evaluationLimit) { truncated = true; return unknown("VALUE_BUDGET_EXCEEDED", context) }
+        return evaluate(expr, env, depth, seen).also { memo[key] = it }
+    }
+    private fun evaluate(expr: Record, env: Map<String, Record>, depth: Int, seen: Set<String>): Record {
         fun next(e: Record) = eval(e, env, depth + 1, seen)
         return when (expr.string("kind")) {
             "INJECTED_VALUE" -> if (expr["qualified"] == true) unknown("DI_QUALIFIER_NOT_MODELED", expr.string("type")) else injection.instance(expr.string("type"), expr.string("scope"))

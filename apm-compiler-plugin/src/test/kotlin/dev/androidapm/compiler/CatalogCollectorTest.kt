@@ -12,6 +12,19 @@ import java.nio.file.Path
 import kotlin.io.path.*
 
 class CatalogCollectorTest {
+    @Test fun `member accessors and their override references have stable qualified symbols`() {
+        val catalog = compile("""
+            interface Source { val current: String }
+            class SourceImpl : Source { override val current: String = "value" }
+            fun read(source: Source): String = source.current
+        """.trimIndent())
+        val declaration = catalog.records("functions").single { it["name"] == "fixture.Source.<get-current>" }
+        val implementation = catalog.records("functions").single { it["name"] == "fixture.SourceImpl.<get-current>" }
+        assertEquals("fixture.Source.<get-current>(fixture.Source)", declaration["symbol"])
+        assertTrue(declaration["symbol"] in implementation.strings("overrideSymbols"))
+        val call = catalog.records("callRelations").single { it["name"] == "fixture.Source.<get-current>" }
+        assertEquals(declaration["symbol"], call["target"])
+    }
     @TempDir lateinit var directory: Path
     private fun Record.strings(key: String): List<String> = (this[key] as? List<*>)?.filterIsInstance<String>().orEmpty()
 
