@@ -24,7 +24,7 @@ object TransitionMain {
         generate(facts, args[1], args[2], query)
     }
     private fun generate(facts: Record, manifest: String, directory: String, query: Record) {
-        val result = TransitionAnalysis.create(facts, onEvents = { stage, index, total -> println("Android APM transitions: $stage $index/$total") }) { index, total -> println("Android APM transitions: context $index/$total") }
+        val result = TransitionReports.compact(TransitionAnalysis.create(facts, onEvents = { stage, index, total -> println("Android APM transitions: $stage $index/$total") }) { index, total -> println("Android APM transitions: context $index/$total") })
         val entries = Files.newInputStream(Path.of(manifest)).use { EntryPoints.collect(it, facts) }
         val paths = AccessPaths.find(result.report, entries, query)
         val output = Path.of(directory)

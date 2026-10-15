@@ -51,7 +51,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
     private val closureKeys = object : LinkedHashMap<Pair<String, Map<String, Record>>, String>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Pair<String, Map<String, Record>>, String>?) = size > 20_000
     }
-    private fun environmentDigest(env: Map<String, Record>): String =
+    internal fun environmentDigest(env: Map<String, Record>): String =
         environmentDigests.getOrPut(snapshot(env)) { fingerprint(env) }
     fun beginContext(ref: String) {
         context = ref
@@ -166,7 +166,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
 
     fun eval(expr: Record, env: Map<String, Record> = emptyMap(), depth: Int = 0, seen: Set<String> = emptySet()): Record {
         if (expr["kind"] == "CONSTANT") return constant(expr["value"])
-        if (expr["kind"] in setOf("ENUM", "SYMBOLIC", "INSTANCE", "STACK", "STREAM", "LIST_VALUE", "MAP_VALUE", "UNKNOWN", "PREDICATE", "OPAQUE", "COMPOSITION_LOCAL", "PROVIDED_LOCAL", "PAIR", "TYPE", "RESULT_VALUE", "ACTIVITY_OWNER", "ACTIVITY_LAUNCHER")) return expr
+        if (expr["kind"] in setOf("ENUM", "SYMBOLIC", "INSTANCE", "STACK", "STREAM", "LIST_VALUE", "LIST_BUILDER", "MAP_VALUE", "UNKNOWN", "PREDICATE", "OPAQUE", "COMPOSITION_LOCAL", "PROVIDED_LOCAL", "PAIR", "TYPE", "RESULT_VALUE", "ACTIVITY_OWNER", "ACTIVITY_LAUNCHER")) return expr
         // Parameter binding fills a mutable map incrementally. A cache key must
         // retain the environment at evaluation time, not a later mutation.
         val key = EvalKey(expr, snapshot(env), depth, seen)

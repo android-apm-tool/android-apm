@@ -12,6 +12,60 @@ import java.nio.file.Path
 import kotlin.io.path.*
 
 class CatalogCollectorTest {
+    @Test fun `conditional callback adapters preserve predicate truth and do not invent clicks`() {
+        for (adapter in listOf("takeIf", "takeUnless")) for (flag in listOf("true", "false", "input")) {
+            val catalog = compile("""
+                object Home
+                object Detail
+                @Composable fun App(input: Boolean) {
+                    val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                    androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                        entry<Home> {
+                            val click = { stack.add(Detail); Unit }.$adapter { $flag }
+                            click?.let { androidx.compose.material3.Button(onClick = it) }
+                        }
+                        entry<Detail> {}
+                    })
+                }
+            """.trimIndent())
+            val result = TransitionAnalysis.create(catalog).report
+            val expected = flag == "input" || (flag == "true") == (adapter == "takeIf")
+            assertEquals(expected, result.records("transitions").isNotEmpty(), Json.encode(result))
+            if (flag == "input") assertEquals(setOf(adapter == "takeIf"), result.records("transitions").flatMap { it.records("guards") }.map { it["expected"] }.toSet())
+        }
+    }
+    @Test fun `built menu callbacks retain item identity guards order and early returns`() {
+        val catalog = compile("""
+            object Home
+            object Detail
+            object Other
+            object Never
+            data class Menu(val click: () -> Unit)
+            @Composable fun App(flag: Boolean) {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> {
+                        val menu = buildList {
+                            if (flag) { add(Menu { stack.add(Detail) }); return@buildList }
+                            add(Menu { stack.add(Other) })
+                            if (false) add(Menu { stack.add(Never) })
+                        }
+                        val unused = buildList { add(Menu { stack.add(Never) }) }
+                        menu.forEach { item -> androidx.compose.material3.Button(onClick = item.click) }
+                    }
+                    entry<Detail> {}
+                    entry<Other> {}
+                    entry<Never> {}
+                })
+            }
+        """.trimIndent())
+        val report = TransitionAnalysis.create(catalog).report
+        val effects = report.records("effects").associateBy { it.string("id") }
+        val edges = report.records("transitions")
+        assertEquals(setOf("fixture.Detail", "fixture.Other"), edges.flatMap { it.strings("effectRefs") }.map { effects.getValue(it)["payload"].record().string("type") }.toSet(), Json.encode(report))
+        assertTrue(edges.all { it.strings("effectRefs").size == 1 })
+        assertEquals(setOf(true, false), edges.flatMap { it.records("guards") }.map { it["expected"] }.toSet())
+    }
     @Test fun `explicit super calls bypass overrides while ordinary calls keep dynamic dispatch`() {
         val catalog = compile("""
             object Home

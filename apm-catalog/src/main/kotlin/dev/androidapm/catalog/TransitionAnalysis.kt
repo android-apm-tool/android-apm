@@ -149,7 +149,7 @@ object TransitionAnalysis {
             val declaration = flow.functions[ref]
             val body = flow.bodies[ref]
             if (declaration == null || body == null) { problem("FUNCTION_BODY_UNAVAILABLE", ref, c.string("id")); return listOf(parent.copy(uncertain = true)) }
-            val env = flow.closures[fn.string("closureId")].orEmpty().toMutableMap()
+            val env = (flow.closures[fn.string("closureId")].orEmpty() + parent.env.filterKeys { it.startsWith("@list:") }).toMutableMap()
             declaration.records("parameters").filter { it.string("ref") !in fn.strings("boundParameterRefs") }.forEachIndexed { i, p ->
                 if (i < args.size) env[p.string("ref")] = args[i]
                 else env.putIfAbsent(p.string("ref"), p["defaultValue"].record().takeIf { it.isNotEmpty() }?.let { flow.eval(it, env) }
@@ -165,14 +165,14 @@ object TransitionAnalysis {
             }
             val before = cutoffs
             val returned = walk(body, parent.copy(env = env, value = emptyMap()), c, event, seen + key, depth + 1).map {
-                it.copy(env = parent.env, stop = if (it.stop == "RETURN" || it.stop == "RETURN:" + ref) "" else it.stop)
+                it.copy(env = parent.env + it.env.filterKeys { key -> key.startsWith("@list:") }, stop = if (it.stop == "RETURN" || it.stop == "RETURN:" + ref) "" else it.stop)
             }
             // Rendering registers its child triggers immediately. Once every
             // branch returns the same value without effects, its local guards
             // must not constrain later, independent caller content.
             return if (event == null && cutoffs == before && returned.isNotEmpty() && returned.all { it.stop.isEmpty() && it.effects == parent.effects } &&
-                returned.map { it.value }.distinct().size == 1 && returned.all { it.guards.containsAll(parent.guards) })
-                listOf(parent.copy(value = returned.first().value, uncertain = parent.uncertain || returned.any { it.uncertain })) else returned
+                returned.map { it.value }.distinct().size == 1 && returned.map { it.env }.distinct().size == 1 && returned.all { it.guards.containsAll(parent.guards) })
+                listOf(parent.copy(env = returned.first().env, value = returned.first().value, uncertain = parent.uncertain || returned.any { it.uncertain })) else returned
         }
         fun walk(stmt: Record, f: Frame, c: Record, event: String?, seen: Set<Invocation>, depth: Int): List<Frame> {
             if (!budget(depth)) return listOf(f.copy(uncertain = true, stop = "LIMIT"))
@@ -319,6 +319,52 @@ object TransitionAnalysis {
             val receiver = call.records("arguments").firstOrNull { it.string("parameterKind").uppercase() in setOf("DISPATCHRECEIVER", "EXTENSIONRECEIVER", "DISPATCH_RECEIVER", "EXTENSION_RECEIVER") }
                 ?: call.records("arguments").firstOrNull { "this" in it.string("name") }
             val instance = receiver?.get("value")?.record()?.let { flow.eval(it, f.env) }
+            if (name in setOf("kotlin.takeIf", "kotlin.takeUnless")) {
+                val callback = args["predicate"].orEmpty()
+                if (callback["kind"] != "FUNCTION" || instance == null) {
+                    problem("CONDITIONAL_VALUE_UNRESOLVED", call.string("id"), c.string("id"))
+                    return listOf(next.copy(uncertain = true))
+                }
+                return bounded(invoke(callback, listOf(instance), next, c, event, seen, depth + 1).flatMap { path ->
+                    if (path.stop.isNotEmpty()) listOf(path) else {
+                        val test = path.value.ifEmpty { flow.returned(callback, listOf(instance)) }
+                        val keep = name == "kotlin.takeIf"
+                        listOfNotNull(assume(path, test, keep)?.let { it.copy(value = instance, env = it.env + ("@evaluated:" + call.string("id") to instance)) },
+                            assume(path, test, !keep)?.let { it.copy(value = flow.constant(null), env = it.env + ("@evaluated:" + call.string("id") to flow.constant(null))) })
+                    }
+                })
+            }
+            if (name == "kotlin.collections.buildList") {
+                val callback = args["builderAction"].orEmpty()
+                if (callback["kind"] != "FUNCTION") return listOf(next.copy(uncertain = true))
+                val id = "@list:" + call.string("id") + ":" + flow.environmentDigest(f.env)
+                val builder = record("kind" to "LIST_BUILDER", "identity" to id)
+                val initial = next.copy(env = next.env + (id to record("kind" to "LIST_VALUE", "items" to emptyList<Record>())))
+                return invoke(callback, listOf(builder), initial, c, event, seen, depth + 1).map { path ->
+                    val result = path.env[id] ?: flow.unknown("LIST_BUILDER_STATE_UNRESOLVED", call.string("id"))
+                    path.copy(value = result, env = (path.env - id) + ("@evaluated:" + call.string("id") to result))
+                }
+            }
+            if (instance?.get("kind") == "LIST_BUILDER" && name in setOf("kotlin.collections.MutableList.add", "kotlin.collections.MutableCollection.add")) {
+                val regular = call.records("arguments").filter { it != receiver }
+                val key = instance.string("identity")
+                val list = f.env[key]
+                if (regular.size != 1 || list?.get("kind") != "LIST_VALUE") {
+                    problem("LIST_BUILDER_MUTATION_UNSUPPORTED", call.string("id"), c.string("id"))
+                    return listOf(next.copy(uncertain = true, stop = "UNSUPPORTED_EFFECT"))
+                }
+                val value = flow.eval(regular.single()["value"].record(), f.env)
+                val updated = list + record("items" to list.records("items") + value)
+                return listOf(next.copy(value = flow.constant(true), env = next.env + (key to updated) + ("@evaluated:" + call.string("id") to flow.constant(true))))
+            }
+            if (name in setOf("kotlin.collections.forEach", "kotlin.collections.forEachIndexed") && instance?.get("kind") == "LIST_VALUE") {
+                val callback = args["action"].orEmpty()
+                if (callback["kind"] != "FUNCTION") return listOf(next.copy(uncertain = true))
+                return instance.records("items").withIndex().fold(listOf(next)) { paths, (index, item) ->
+                    bounded(paths.flatMap { path -> if (path.stop.isNotEmpty()) listOf(path) else invoke(callback,
+                        if (name.endsWith("Indexed")) listOf(flow.constant(index), item) else listOf(item), path, c, event, seen, depth + 1) })
+                }
+            }
             if (event != null && name in setOf("androidx.activity.compose.ManagedActivityResultLauncher.launch", "androidx.activity.result.ActivityResultLauncher.launch")) {
                 if (instance?.get("kind") != "ACTIVITY_LAUNCHER") {
                     problem("ACTIVITY_RESULT_LAUNCHER_UNRESOLVED", call.string("id"), c.string("id"))

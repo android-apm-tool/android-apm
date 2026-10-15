@@ -14,7 +14,7 @@ abstract class LinkTransitionsTask : DefaultTask() {
     @get:OutputFile abstract val transitionsFile: RegularFileProperty
     @get:OutputFile abstract val evidenceFile: RegularFileProperty
     @TaskAction fun link() {
-        val result = TransitionAnalysis.create(read(factsFile), onEvents = { stage, index, total -> logger.lifecycle("Android APM transitions: $stage $index/$total") }) { index, total -> logger.lifecycle("Android APM transitions: context $index/$total") }
+        val result = TransitionReports.compact(TransitionAnalysis.create(read(factsFile), onEvents = { stage, index, total -> logger.lifecycle("Android APM transitions: $stage $index/$total") }) { index, total -> logger.lifecycle("Android APM transitions: context $index/$total") })
         publish(evidenceFile, result.evidence)
         publish(transitionsFile, result.report)
         logger.lifecycle("Android APM transitions: ${transitionsFile.get().asFile.absolutePath}")
