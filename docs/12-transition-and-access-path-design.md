@@ -1,6 +1,6 @@
 # AI 없는 화면 연결과 접근 경로 상세 설계
 
-수정일: 2026-10-15. 설계 출발점은 PR #6의 `82af184`다. 이 문서는 전체 목표와 인수 기준을 유지한다. **현재 구현 범위·실행 방법·검증 결과·미지원 capability는 [14번 구현 기록](14-offline-transitions-implementation.md)에 구분해서 기록한다.** 현재 카탈로그 결과는 [11번 문서](11-ui-diagnosis-and-design-matching.md), 상위 요구는 [04번 문서](04-navigation-transition-analysis.md)를 따른다. 실행 격리와 데이터 보관의 필수 계약은 [13번 보안 설계](13-local-analysis-security.md)에 정의한다.
+수정일: 2026-10-15. 설계 출발점은 PR #6의 `82af184`다. 이 문서는 전체 목표와 인수 기준을 유지한다. **구현 범위·실행 방법·검증 결과·미지원 capability는 [14번 초기 구현 기록](14-offline-transitions-implementation.md)과 [15번 경로 발견 범위 개선](15-access-path-coverage.md)에 구분해서 기록한다.** 현재 카탈로그 결과는 [11번 문서](11-ui-diagnosis-and-design-matching.md), 상위 요구는 [04번 문서](04-navigation-transition-analysis.md)를 따른다. 실행 격리와 데이터 보관의 필수 계약은 [13번 보안 설계](13-local-analysis-security.md)에 정의한다.
 
 목표는 특정 화면에 대해 출발 화면·행동·전달 과정·탐색 상태 변경·목적지·필요 조건을 설명하고, 지정한 시작점에서의 접근 순서를 제시하는 것이다. 기존 K2 IR, SootUp/Heros, 콘텐츠 trace와 식별자를 재사용한다. 임의의 앱에서 모든 실행 경로가 가능하거나 불가능하다는 완전한 증명은 제공하지 않는다.
 

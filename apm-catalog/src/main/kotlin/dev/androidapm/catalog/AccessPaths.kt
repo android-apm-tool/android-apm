@@ -3,6 +3,7 @@ package dev.androidapm.catalog
 /** Finite, path-sensitive stack exploration. A missing path never proves unreachability. */
 object AccessPaths {
     fun find(transitions: Record, entries: Record, query: Record = emptyMap()): Record {
+        require(transitions["diagnosticOnly"] != true) { "DIAGNOSTIC_SNAPSHOT_NOT_ACCESS_EVIDENCE" }
         require(transitions["schemaVersion"] == entries["schemaVersion"]) { "INCOMPATIBLE_ACCESS_INPUTS" }
         require(transitions["catalogFingerprint"] == entries["catalogFingerprint"]) { "ACCESS_INPUT_PROVENANCE_MISMATCH" }
         val contexts = transitions.records("contexts")

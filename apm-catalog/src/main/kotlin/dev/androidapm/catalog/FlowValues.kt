@@ -326,6 +326,9 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                     name in setOf("kotlin.internal.ir.EQEQ", "kotlin.internal.ir.EQEQEQ", "kotlin.Boolean.not") -> {
                         val list = args.values.toList()
                         if (list.all { it["kind"] == "CONSTANT" }) constant(if (name.endsWith(".not")) list.first()["value"] != true else list.getOrNull(0)?.get("value") == list.getOrNull(1)?.get("value"))
+                        // Enum.equals is final; two concrete enum entries have
+                        // equality exactly when their declaration symbols agree.
+                        else if (!name.endsWith(".not") && list.size == 2 && list.all { it["kind"] == "ENUM" && it.string("ref").isNotEmpty() }) constant(list[0]["ref"] == list[1]["ref"])
                         else if (!name.endsWith(".not") && list.size == 2 && list.any { it == constant(null) } && list.any { it["kind"] in setOf("INSTANCE", "FUNCTION", "STACK", "STREAM", "MAP_VALUE", "LIST_VALUE", "INTENT", "URI") }) constant(false)
                         else if (!name.endsWith(".not") && list.size == 2 && list.all { it["kind"] == "INSTANCE" && it.string("identity").startsWith("object:") } &&
                             (name.endsWith(".EQEQEQ") || standardEquality(list[0].string("type")))) constant(list[0]["identity"] == list[1]["identity"])

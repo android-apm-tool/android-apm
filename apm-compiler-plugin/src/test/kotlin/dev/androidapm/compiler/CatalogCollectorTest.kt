@@ -12,6 +12,62 @@ import java.nio.file.Path
 import kotlin.io.path.*
 
 class CatalogCollectorTest {
+    @Test fun `concrete enum branches cannot register a different mode callback`() {
+        val catalog = compile("""
+            object Home
+            object Detail
+            object Never
+            enum class Mode { OPEN, CLOSED }
+            enum class OtherMode { OPEN }
+            @Composable fun Content(mode: Mode, click: () -> Unit, wrong: () -> Unit) {
+                when (mode) {
+                    Mode.OPEN -> androidx.compose.material3.Button(onClick = click)
+                    Mode.CLOSED -> androidx.compose.material3.Button(onClick = wrong)
+                }
+                if ((mode as Any) == OtherMode.OPEN) androidx.compose.material3.Button(onClick = wrong)
+            }
+            @Composable fun App() {
+                val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                    entry<Home> { Content(Mode.OPEN, { stack.add(Detail) }, { stack.add(Never) }) }
+                    entry<Detail> {}
+                    entry<Never> {}
+                })
+            }
+        """.trimIndent())
+        val result = TransitionAnalysis.create(catalog).report
+        val edges = result.records("transitions")
+        val effects = result.records("effects").associateBy { it["id"] }
+        assertEquals(setOf("fixture.Detail"), edges.flatMap { it.strings("effectRefs") }.map { effects.getValue(it)["payload"].record().string("type") }.toSet(), Json.encode(result))
+        assertTrue(edges.all { it.records("guards").isEmpty() })
+    }
+    @Test fun `scope adapters preserve returned destination receiver and nonlocal termination`() {
+        val expressions = mapOf("Detail.let { Other }" to "fixture.Other", "Detail.run { Other }" to "fixture.Other",
+            "with(Detail) { Other }" to "fixture.Other", "Detail.also { Other }" to "fixture.Detail", "Detail.apply { Other }" to "fixture.Detail",
+            "Detail.let { return@Button }" to null, "Detail.run { throw IllegalStateException() }" to null)
+        for ((expression, expected) in expressions) {
+            val catalog = compile("""
+                object Home
+                object Detail
+                object Other
+                @Composable fun App() {
+                    val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                    androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                        entry<Home> { androidx.compose.material3.Button(onClick = {
+                            val destination = $expression
+                            stack.add(destination)
+                        }) }
+                        entry<Detail> {}
+                        entry<Other> {}
+                    })
+                }
+            """.trimIndent())
+            val result = TransitionAnalysis.create(catalog).report
+            val effects = result.records("effects").associateBy { it["id"] }
+            val destinations = result.records("transitions").flatMap { it.strings("effectRefs") }.map { effects.getValue(it)["payload"].record().string("type") }.toSet()
+            assertEquals(if (expected == null) emptySet() else setOf(expected), destinations, expression)
+        }
+    }
     @Test fun `warm links require manifest matching parser acceptance and actual stack application`() {
         val catalog = compile("""
             object Home
@@ -29,7 +85,8 @@ class CatalogCollectorTest {
                     val segments = uri.pathSegments
                     if (segments.firstOrNull() != "invite") return
                     val token = segments.getOrNull(1)?.takeIf { it.isNotBlank() } ?: return
-                    navigator.navigate(Detail(token))
+                    val page = token.let { Detail(it) }.also { check(it.token.isNotBlank()) }
+                    navigator.navigate(page)
                 }
                 @Composable fun App() {
                     val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }

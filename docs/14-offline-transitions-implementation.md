@@ -1,6 +1,6 @@
 # AI 없는 화면 연결·접근 경로 구현 기록
 
-기준일: 2026-10-15. 전체 목표는 [12번 설계](12-transition-and-access-path-design.md), 보안 계약은 [13번 설계](13-local-analysis-security.md)다. 이 문서는 구현된 범위와 아직 해석하지 못하는 범위를 구분한다.
+기준일: 2026-10-15. 전체 목표는 [12번 설계](12-transition-and-access-path-design.md), 보안 계약은 [13번 설계](13-local-analysis-security.md)다. 이 문서는 PR #7 시점의 구현과 검증 기록이다. 이후의 상속·조건부 메뉴·warm 외부 링크·경로 발견 범위·공유 근거 형식은 [15번 구현 기록](15-access-path-coverage.md)을 따른다.
 
 ## 선택 이유
 

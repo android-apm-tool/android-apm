@@ -4,6 +4,15 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class TransitionAnalysisTest {
+    @Test fun `filtered diagnostics cannot be passed off as complete access evidence`() {
+        val facts = fixture()
+        val full = TransitionAnalysis.create(facts).report
+        val context = full.records("contexts").first().string("id")
+        val diagnostic = TransitionAnalysis.create(facts, diagnosticContextRefs = setOf(context)).report
+        assertEquals(true, diagnostic["diagnosticOnly"])
+        assertThrows(IllegalArgumentException::class.java) { AccessPaths.find(diagnostic, entries(diagnostic)) }
+        assertThrows(IllegalArgumentException::class.java) { TransitionAnalysis.create(facts, diagnosticContextRefs = setOf("missing")) }
+    }
     @Test fun `predicate fingerprints may be reused but guard truth and state versions cannot`() {
         val checks = AccessPaths.GuardChecks()
         val test = record("kind" to "PREDICATE", "operation" to "input")
@@ -194,6 +203,22 @@ class TransitionAnalysisTest {
             assertEquals("COMPOSITION_LOCAL_PROVIDER_UNRESOLVED", flow.eval(expr, mapOf("@local:different" to stream))["reason"])
             assertEquals("COMPOSITION_LOCAL_PROVIDER_UNRESOLVED", flow.eval(expr)["reason"])
         }
+    }
+    @Test fun `render and event limits are independent explicit and fail closed`() {
+        val base = fixture()
+        val input = base + record("callRelations" to base.records("callRelations") + call("decoration", "androidx.compose.foundation.layout.Box", emptyList()),
+            "functionBodies" to base.records("functionBodies").filter { it["owner"] != "Home" } + body("Home", List(100) { statement("decoration") } + statement("button")))
+        val lowRender = TransitionAnalysis.create(input, limits = TransitionLimits(renderVisits = 100)).report
+        assertTrue(lowRender.records("transitions").isEmpty())
+        assertTrue(lowRender.records("diagnostics").any { it["code"] == "CONTROL_FLOW_VISIT_LIMIT" && it["detail"] == "RENDER" })
+        val enough = TransitionAnalysis.create(input, limits = TransitionLimits(renderVisits = 1_000)).report
+        assertEquals(1, enough.records("transitions").size)
+        assertEquals(1_000, enough["limits"].record()["renderVisits"])
+        val lowEvent = TransitionAnalysis.create(input, limits = TransitionLimits(renderVisits = 1_000, eventVisits = 1)).report
+        assertTrue(lowEvent.records("triggers").isNotEmpty())
+        assertTrue(lowEvent.records("transitions").isEmpty())
+        assertTrue(lowEvent.records("diagnostics").any { it["code"] == "CONTROL_FLOW_VISIT_LIMIT" && it.string("detail").startsWith("TRIGGER:") })
+        assertThrows(IllegalArgumentException::class.java) { TransitionLimits(renderVisits = 0) }
     }
     @Test fun `independent rendering branch does not constrain the following button`() {
         val base = fixture()
