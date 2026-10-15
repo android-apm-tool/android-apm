@@ -125,7 +125,7 @@ object AccessPaths {
     internal fun contradictory(guards: List<Record>): Boolean = GuardChecks().contradictory(guards)
 
     /** Report predicates are immutable. Cache only within one query, never across inputs. */
-    private class GuardChecks {
+    internal class GuardChecks {
         private val keys = java.util.IdentityHashMap<Record, String>()
         fun contradictory(guards: List<Record>): Boolean {
             val expectedByKey = HashMap<Pair<String, String>, Any?>()
@@ -138,7 +138,11 @@ object AccessPaths {
                     expected = expected != true
                 }
                 if (test["kind"] == "CONSTANT" && test["value"] is Boolean && test["value"] != expected) return true
-                val key = keys.getOrPut(test) { fingerprint(test) } to Json.encode(guard["version"])
+                val digest = keys[test] ?: fingerprint(test).also {
+                    if (keys.size >= 20_000) keys.clear()
+                    keys[test] = it
+                }
+                val key = digest to Json.encode(guard["version"])
                 if (expectedByKey.containsKey(key) && expectedByKey[key] != expected) return true
                 expectedByKey[key] = expected
             }

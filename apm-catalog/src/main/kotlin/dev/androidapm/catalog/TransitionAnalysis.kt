@@ -18,6 +18,7 @@ object TransitionAnalysis {
     private data class PendingTrigger(val id: String, val callback: Record, val frame: Frame, val context: Record)
     private class Analyzer(val catalog: Record, val onContext: (Int, Int) -> Unit, val onEvents: (String, Int, Int) -> Unit) {
         val flow = FlowValues(catalog)
+        val guardChecks = AccessPaths.GuardChecks()
         val evidence = linkedMapOf<String, Record>()
         val contexts = mutableListOf<Record>()
         val triggers = linkedMapOf<String, Record>()
@@ -58,7 +59,7 @@ object TransitionAnalysis {
                     mapOf("@activityOwner" to record("kind" to "ACTIVITY_OWNER", "identity" to "activity:" + activity)) else emptyMap()
                 val fn = flow.eval(content, rootEnv)
                 val guards = root.records("conditions").flatMap { branch -> listOf(record("test" to flow.eval(branch["test"].record()), "expected" to true)) + branch.records("excluded").map { record("test" to flow.eval(it), "expected" to false) } }
-                if (fn["kind"] == "FUNCTION" && !AccessPaths.contradictory(guards)) invoke(fn, emptyList(), Frame(guards = guards), c, null, emptySet(), 0)
+                if (fn["kind"] == "FUNCTION" && !guardChecks.contradictory(guards)) invoke(fn, emptyList(), Frame(guards = guards), c, null, emptySet(), 0)
             }
             catalog.records("navHosts").forEach { h ->
                 // Declaration-only fixtures can describe a host. With real roots, only
@@ -223,7 +224,7 @@ object TransitionAnalysis {
             if (test == flow.constant(expected)) return f
             if (test == flow.constant(!expected)) return null
             val guards = (f.guards + record("test" to test, "expected" to expected)).distinct()
-            return if (AccessPaths.contradictory(guards)) null else f.copy(guards = guards)
+            return if (guardChecks.contradictory(guards)) null else f.copy(guards = guards)
         }
         fun expression(expr: Record, f: Frame, c: Record, event: String?, seen: Set<Invocation>, depth: Int): List<Frame> {
             if (f.stop.isNotEmpty()) return listOf(f)

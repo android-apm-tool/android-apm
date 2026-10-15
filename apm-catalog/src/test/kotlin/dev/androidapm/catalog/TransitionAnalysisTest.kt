@@ -4,6 +4,16 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class TransitionAnalysisTest {
+    @Test fun `predicate fingerprints may be reused but guard truth and state versions cannot`() {
+        val checks = AccessPaths.GuardChecks()
+        val test = record("kind" to "PREDICATE", "operation" to "input")
+        fun guard(value: Boolean, version: Int) = record("test" to test, "expected" to value, "version" to version)
+        assertTrue(checks.contradictory(listOf(guard(true, 0), guard(false, 0))))
+        assertFalse(checks.contradictory(listOf(guard(true, 0), guard(false, 1))))
+        assertFalse(checks.contradictory(listOf(guard(false, 0))))
+        val copy = record("kind" to "PREDICATE", "operation" to "input")
+        assertTrue(checks.contradictory(listOf(guard(true, 0), record("test" to copy, "expected" to false, "version" to 0))))
+    }
     @Test fun `unproven field receivers cannot borrow the screen context as Channel ownership`() {
         val flow = FlowValues(record("callRelations" to listOf(call("channel", "kotlinx.coroutines.channels.Channel", emptyList()))))
         val expr = record("kind" to "CALL", "callId" to "channel")
