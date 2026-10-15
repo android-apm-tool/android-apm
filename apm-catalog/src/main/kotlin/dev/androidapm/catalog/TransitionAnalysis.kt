@@ -155,8 +155,14 @@ object TransitionAnalysis {
                 else env.putIfAbsent(p.string("ref"), p["defaultValue"].record().takeIf { it.isNotEmpty() }?.let { flow.eval(it, env) }
                     ?: record("kind" to "SYMBOLIC", "ref" to p["ref"], "type" to p["type"]))
             }
-            val key = Invocation(ref, flow.environmentKey(env), event)
-            if (key in seen) { problem("RECURSIVE_CONTROL_FLOW", ref, c.string("id")); return listOf(parent.copy(uncertain = true)) }
+            // Allocation call history is bookkeeping, not an input to this
+            // invocation. Keep actual receiver/argument identities and captured
+            // values, so recursion with different inputs can still terminate.
+            val key = Invocation(ref, flow.environmentKey(env - "@allocationContext"), event)
+            if (key in seen) {
+                problem("RECURSIVE_CONTROL_FLOW", ref, c.string("id"))
+                return listOf(parent.copy(uncertain = true, stop = "RECURSION"))
+            }
             val before = cutoffs
             val returned = walk(body, parent.copy(env = env, value = emptyMap()), c, event, seen + key, depth + 1).map {
                 it.copy(env = parent.env, stop = if (it.stop == "RETURN" || it.stop == "RETURN:" + ref) "" else it.stop)

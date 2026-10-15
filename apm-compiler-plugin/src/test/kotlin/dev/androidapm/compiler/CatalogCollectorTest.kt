@@ -12,6 +12,31 @@ import java.nio.file.Path
 import kotlin.io.path.*
 
 class CatalogCollectorTest {
+    @Test fun `repeated recursive inputs stop without inventing continuation but changing arguments can reach a base case`() {
+        for (terminates in listOf(false, true)) {
+            val catalog = compile("""
+                object Home
+                object Detail
+                fun repeatAction(next: Boolean, action: () -> Unit) {
+                    if (next) repeatAction(${if (terminates) "false" else "true"}, action) else action()
+                }
+                @Composable fun App() {
+                    val stack = androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateListOf<Any>(Home) }
+                    androidx.navigation3.ui.NavDisplay(backStack = stack, entryProvider = entryProvider<Any> {
+                        entry<Home> { androidx.compose.material3.Button(onClick = {
+                            repeatAction(true) { stack.add(Detail) }
+                            stack.add(Detail)
+                        }) }
+                        entry<Detail> {}
+                    })
+                }
+            """.trimIndent())
+            val report = TransitionAnalysis.create(catalog).report
+            assertEquals(terminates, report.records("transitions").isNotEmpty(), Json.encode(report))
+            assertEquals(!terminates, report.records("diagnostics").any { it["code"] == "RECURSIVE_CONTROL_FLOW" })
+            assertFalse(report.records("diagnostics").any { it["code"] == "CONTROL_FLOW_DEPTH_LIMIT" })
+        }
+    }
     @Test fun `compiled Result callbacks preserve values receivers and exclusive failure branches`() {
         for (work in listOf("runCatching { Detail }", "Detail.runCatching { this }", "runCatching<Any> { throw IllegalStateException() }")) {
             val catalog = compile("""
