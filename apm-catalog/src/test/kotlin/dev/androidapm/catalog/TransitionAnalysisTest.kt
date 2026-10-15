@@ -4,6 +4,17 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class TransitionAnalysisTest {
+    @Test fun `incremental argument binding cannot mutate an existing cache key`() {
+        val flow = FlowValues(emptyMap(), evaluationLimit = 2)
+        val expr = record("kind" to "REFERENCE", "ref" to "argument")
+        val env = mutableMapOf("argument" to constant("one"))
+        assertEquals(constant("one"), flow.eval(expr, env))
+        env["argument"] = constant("two")
+        assertEquals(constant("two"), flow.eval(expr, env))
+        env["argument"] = constant("one")
+        assertEquals(constant("two"), flow.eval(expr, mapOf("argument" to constant("two"))))
+        assertFalse(flow.truncated)
+    }
     @Test fun `memoized values preserve environments and one exhausted context cannot starve another`() {
         val flow = FlowValues(emptyMap(), evaluationLimit = 2)
         flow.beginContext("first")

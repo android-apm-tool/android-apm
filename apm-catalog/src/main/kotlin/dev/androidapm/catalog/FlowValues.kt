@@ -91,7 +91,9 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
     fun eval(expr: Record, env: Map<String, Record> = emptyMap(), depth: Int = 0, seen: Set<String> = emptySet()): Record {
         if (expr["kind"] == "CONSTANT") return constant(expr["value"])
         if (expr["kind"] in setOf("ENUM", "SYMBOLIC", "INSTANCE", "STACK", "STREAM", "LIST_VALUE", "MAP_VALUE", "UNKNOWN", "PREDICATE", "OPAQUE", "COMPOSITION_LOCAL", "PROVIDED_LOCAL", "PAIR", "TYPE")) return expr
-        val key = EvalKey(expr, env, depth, seen)
+        // Parameter binding fills a mutable map incrementally. A cache key must
+        // retain the environment at evaluation time, not a later mutation.
+        val key = EvalKey(expr, env.toMap(), depth, seen)
         memo[key]?.let { return it }
         if (depth > 36 || ++evaluations > evaluationLimit) { truncated = true; return unknown("VALUE_BUDGET_EXCEEDED", context) }
         return evaluate(expr, env, depth, seen).also { memo[key] = it }
