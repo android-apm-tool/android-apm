@@ -5,14 +5,17 @@ data class TransitionResult(val report: Record, val evidence: Record)
 /** Bounded source interpreter; runtime reachability and unsupported dispatch stay explicit. */
 object TransitionAnalysis {
     const val version = "transitions-v1"
-    fun create(catalog: Record): TransitionResult {
+    fun create(catalog: Record, onContext: (Int, Int) -> Unit = { _, _ -> }): TransitionResult {
         require(catalog.strings("factsCapabilities").containsAll(setOf("CONTROL_FLOW_IR_V1", "PARAMETER_DEFAULTS_V1", "ASSIGNMENTS_V1"))) { "TRANSITION_FACTS_RECOLLECTION_REQUIRED" }
-        return Analyzer(catalog).run()
+        return Analyzer(catalog, onContext).run()
     }
     private data class Frame(val env: Map<String, Record> = emptyMap(), val guards: List<Record> = emptyList(),
         val effects: List<String> = emptyList(), val trace: List<String> = emptyList(), val uncertain: Boolean = false,
         val stop: String = "", val value: Record = emptyMap())
-    private class Analyzer(val catalog: Record) {
+    // Recursion detection is in-memory equality, not a persisted evidence ID.
+    // Avoid serializing a large captured environment at every invocation.
+    private data class Invocation(val function: String, val environment: Map<String, Record>, val event: String?)
+    private class Analyzer(val catalog: Record, val onContext: (Int, Int) -> Unit) {
         val flow = FlowValues(catalog)
         val evidence = linkedMapOf<String, Record>()
         val contexts = mutableListOf<Record>()
@@ -62,7 +65,8 @@ object TransitionAnalysis {
                     "content" to b["content"], "definitionStatus" to "REGISTERED", "source" to b["source"]) }
             }
             catalog.records("screenCandidates").forEach { problem("DESTINATION_BINDING_UNRESOLVED", it.string("id"), detail = "Content storage requires lookup/render proof") }
-            contexts.forEach { c ->
+            contexts.forEachIndexed { index, c ->
+                onContext(index + 1, contexts.size)
                 visits = 0
                 flow.beginContext(c.string("id"))
                 val environment = hostEnvironments[c.string("hostRef")].orEmpty() + mapOf("@context" to record("ref" to c["id"]))
@@ -104,7 +108,7 @@ object TransitionAnalysis {
                 "evidence" to evidence.map { (id, v) -> record("id" to id) + v }))
         }
         fun budget(depth: Int): Boolean = if (++visits > 100_000 || depth > 192) { truncated = true; false } else true
-        fun invoke(fn: Record, args: List<Record>, parent: Frame, c: Record, event: String?, seen: Set<String>, depth: Int): List<Frame> {
+        fun invoke(fn: Record, args: List<Record>, parent: Frame, c: Record, event: String?, seen: Set<Invocation>, depth: Int): List<Frame> {
             if (!budget(depth)) return listOf(parent.copy(uncertain = true, stop = "LIMIT"))
             val ref = fn.string("ref")
             if (event == null && ref in c.strings("expectedRenderRefs")) reachedRenders.getOrPut(c.string("id")) { sortedSetOf() }.add(ref)
@@ -117,13 +121,13 @@ object TransitionAnalysis {
                 else env.putIfAbsent(p.string("ref"), p["defaultValue"].record().takeIf { it.isNotEmpty() }?.let { flow.eval(it, env) }
                     ?: record("kind" to "SYMBOLIC", "ref" to p["ref"], "type" to p["type"]))
             }
-            val key = ref + ":" + fingerprint(env.toSortedMap()) + ":" + event
+            val key = Invocation(ref, env.toMap(), event)
             if (key in seen) { problem("RECURSIVE_CONTROL_FLOW", ref, c.string("id")); return listOf(parent.copy(uncertain = true)) }
             return walk(body, parent.copy(env = env, value = emptyMap()), c, event, seen + key, depth + 1).map {
                 it.copy(env = parent.env, stop = if (it.stop == "RETURN" || it.stop == "RETURN:" + ref) "" else it.stop)
             }
         }
-        fun walk(stmt: Record, f: Frame, c: Record, event: String?, seen: Set<String>, depth: Int): List<Frame> {
+        fun walk(stmt: Record, f: Frame, c: Record, event: String?, seen: Set<Invocation>, depth: Int): List<Frame> {
             if (!budget(depth)) return listOf(f.copy(uncertain = true, stop = "LIMIT"))
             return when (stmt.string("op")) {
                 "BLOCK" -> stmt.records("statements").fold(listOf(f)) { states, child ->
@@ -165,7 +169,7 @@ object TransitionAnalysis {
             val guards = (f.guards + record("test" to test, "expected" to expected)).distinct()
             return if (AccessPaths.contradictory(guards)) null else f.copy(guards = guards)
         }
-        fun expression(expr: Record, f: Frame, c: Record, event: String?, seen: Set<String>, depth: Int): List<Frame> {
+        fun expression(expr: Record, f: Frame, c: Record, event: String?, seen: Set<Invocation>, depth: Int): List<Frame> {
             if (expr["kind"] == "CHOICE" && expr.string("choiceGroupId").isNotEmpty()) {
                 return bounded(expr.records("alternatives").flatMap { alternative ->
                     var branch: Frame? = assume(f, flow.eval(alternative["test"].record(), f.env), true)
@@ -186,7 +190,7 @@ object TransitionAnalysis {
             }
             return bounded(states.flatMap { dispatch(call, it, c, event, seen, depth + 1) })
         }
-        fun dispatch(call: Record, f: Frame, c: Record, event: String?, seen: Set<String>, depth: Int): List<Frame> {
+        fun dispatch(call: Record, f: Frame, c: Record, event: String?, seen: Set<Invocation>, depth: Int): List<Frame> {
             val name = call.string("name")
             val args = flow.arguments(call, f.env)
             val next = f.copy(trace = f.trace + proof(record("kind" to "CALL", "callRef" to call["id"], "source" to call["source"], "target" to call["target"])))
@@ -340,7 +344,7 @@ object TransitionAnalysis {
             }
             return listOf(next)
         }
-        fun trigger(call: Record, kind: String, callback: Record, enabled: Record, f: Frame, c: Record, seen: Set<String>, depth: Int) {
+        fun trigger(call: Record, kind: String, callback: Record, enabled: Record, f: Frame, c: Record, seen: Set<Invocation>, depth: Int) {
             if (c["root"] == true) return
             if (callback["kind"] != "FUNCTION") { problem("TRIGGER_CALLBACK_UNRESOLVED", call.string("id"), c.string("id")); return }
             val id = "trigger:" + fingerprint(record("context" to c["id"], "call" to call["id"], "callback" to callback, "guards" to f.guards))

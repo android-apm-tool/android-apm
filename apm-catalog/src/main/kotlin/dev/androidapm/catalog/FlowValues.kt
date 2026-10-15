@@ -18,10 +18,20 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
     private val memo = object : LinkedHashMap<EvalKey, Record>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<EvalKey, Record>?) = size > 20_000
     }
+    private val environmentDigests = object : LinkedHashMap<Map<String, Record>, String>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Map<String, Record>, String>?) = size > 20_000
+    }
+    private val closureKeys = object : LinkedHashMap<Pair<String, Map<String, Record>>, String>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Pair<String, Map<String, Record>>, String>?) = size > 20_000
+    }
+    private fun environmentDigest(env: Map<String, Record>): String =
+        environmentDigests.getOrPut(env.toMap()) { fingerprint(env) }
     fun beginContext(ref: String) {
         context = ref
         evaluations = 0
         memo.clear()
+        environmentDigests.clear()
+        closureKeys.clear()
     }
     var truncated = false
         private set
@@ -44,7 +54,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
     fun closure(ref: String, env: Map<String, Record>): Record {
         val used = captures.getOrPut(ref) { capturedReferences(ref) }
         val captured = env.filterKeys { it in used || it in setOf("@context", "@allocationContext", "@receiver") || it.startsWith("@local:") }
-        val id = fingerprint(record("ref" to ref, "environment" to captured.toSortedMap()))
+        val id = closureKeys.getOrPut(ref to captured) { fingerprint(record("ref" to ref, "environment" to captured)) }
         closures.putIfAbsent(id, captured)
         return record("kind" to "FUNCTION", "ref" to ref, "closureId" to id)
     }
@@ -156,7 +166,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
             "CALL", "CONSTRUCTOR" -> {
                 env["@evaluated:" + expr.string("callId")]?.let { return it }
                 val call = calls[expr.string("callId")] ?: return unknown("CALL_FACT_UNAVAILABLE", expr.string("callId"))
-                val key = call.string("id") + ":" + fingerprint(env.toSortedMap())
+                val key = call.string("id") + ":" + environmentDigest(env)
                 if (key in seen) return unknown("RECURSIVE_VALUE", call.string("id"))
                 val args = call.records("arguments").associate { it.string("name") to eval(it["value"].record(), env, depth + 1, seen + key) }
                 val name = call.string("name")
