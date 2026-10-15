@@ -198,6 +198,13 @@ class TransitionAnalysisTest {
         val r = TransitionAnalysis.create(fixture()).report
         assertThrows(IllegalArgumentException::class.java) { AccessPaths.find(r, entries(r) + record("catalogFingerprint" to "other")) }
     }
+    @Test fun `structurally equal predicate copies conflict and different predicates remain independent`() {
+        val first = record("test" to record("kind" to "SYMBOLIC", "ref" to "ready"), "expected" to true)
+        val copy = record("test" to record("ref" to "ready", "kind" to "SYMBOLIC"), "expected" to false)
+        assertTrue(AccessPaths.contradictory(listOf(first, copy)))
+        assertFalse(AccessPaths.contradictory(listOf(first, copy + record("test" to reference("other")))))
+        assertTrue(AccessPaths.contradictory(listOf(record("test" to constant(false), "expected" to true))))
+    }
     @Test fun `negated predicates conflict within one state version but not across writes`() {
         val test = reference("ready")
         val positive = record("test" to test, "expected" to true, "version" to 0)

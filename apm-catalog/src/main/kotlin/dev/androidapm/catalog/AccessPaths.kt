@@ -16,6 +16,7 @@ object AccessPaths {
         val suffixLimit = limit(query, "stackSuffix", 8, 64)
         val targets = query.strings("targetContextRefs").ifEmpty { contexts.map { it.string("id") } }.toSet()
         require(targets.all { id -> contexts.any { it["id"] == id } }) { "UNKNOWN_TARGET_CONTEXT" }
+        val checks = GuardChecks()
         val queue = ArrayDeque<State>()
         val paths = mutableListOf<Record>()
         val frontier = linkedMapOf<String, Record>()
@@ -25,7 +26,7 @@ object AccessPaths {
                 val initial = transitions.records("initialStacks").singleOrNull { it["hostRef"] == host }
                 if (initial?.get("status") == "STRUCTURAL") {
                     val keys = initial.records("initialKeys")
-                    if (keys.isNotEmpty() && !contradictory(initial.records("guards"))) queue.add(State(entry.string("id"), host, keys.takeLast(suffixLimit), keys.size > suffixLimit, initial.records("guards")))
+                    if (keys.isNotEmpty() && !checks.contradictory(initial.records("guards"))) queue.add(State(entry.string("id"), host, keys.takeLast(suffixLimit), keys.size > suffixLimit, initial.records("guards")))
                     else unresolved("INITIAL_STACK_EMPTY_OR_UNKNOWN", host)
                 } else unresolved("INITIAL_STACK_UNRESOLVED", host)
             }
@@ -64,7 +65,7 @@ object AccessPaths {
                 val guards = state.guards + edge.records("guards").map { guard ->
                     if (guard["mutableState"] == true) guard + record("version" to state.version) else guard
                 }
-                if (contradictory(guards)) continue
+                if (checks.contradictory(guards)) continue
                 var stack = state.stack
                 var unknownPrefix = state.unknownPrefix
                 var valid = true
@@ -103,20 +104,27 @@ object AccessPaths {
     private data class State(val entry: String, val host: String, val stack: List<Record>, val unknownPrefix: Boolean,
         val guards: List<Record> = emptyList(), val steps: List<String> = emptyList(), val version: Int = 0)
     private fun limit(query: Record, key: String, default: Int, maximum: Int): Int = ((query[key] as? Number)?.toInt() ?: default).also { require(it in 1..maximum) { "INVALID_ACCESS_LIMIT:$key" } }
-    internal fun contradictory(guards: List<Record>): Boolean {
-        val normalized = guards.map { guard ->
-            var test = guard["test"].record()
-            var expected = guard["expected"]
-            var depth = 0
-            while (test["kind"] == "PREDICATE" && test["operation"] == "kotlin.Boolean.not" && test.records("arguments").size == 1 && depth++ < 64) {
-                test = test.records("arguments").single()
-                expected = expected != true
+    internal fun contradictory(guards: List<Record>): Boolean = GuardChecks().contradictory(guards)
+
+    /** Report predicates are immutable. Cache only within one query, never across inputs. */
+    private class GuardChecks {
+        private val keys = java.util.IdentityHashMap<Record, String>()
+        fun contradictory(guards: List<Record>): Boolean {
+            val expectedByKey = HashMap<Pair<String, String>, Any?>()
+            for (guard in guards) {
+                var test = guard["test"].record()
+                var expected = guard["expected"]
+                var depth = 0
+                while (test["kind"] == "PREDICATE" && test["operation"] == "kotlin.Boolean.not" && test.records("arguments").size == 1 && depth++ < 64) {
+                    test = test.records("arguments").single()
+                    expected = expected != true
+                }
+                if (test["kind"] == "CONSTANT" && test["value"] is Boolean && test["value"] != expected) return true
+                val key = keys.getOrPut(test) { fingerprint(test) } to Json.encode(guard["version"])
+                if (expectedByKey.containsKey(key) && expectedByKey[key] != expected) return true
+                expectedByKey[key] = expected
             }
-            guard + record("test" to test, "expected" to expected)
+            return false
         }
-        return normalized.any { guard ->
-        val test = guard["test"].record()
-        test["kind"] == "CONSTANT" && test["value"] is Boolean && test["value"] != guard["expected"]
-    } || normalized.groupBy { fingerprint(record("test" to it["test"], "version" to it["version"])) }.values.any { group -> group.map { it["expected"] }.distinct().size > 1 }
     }
 }
