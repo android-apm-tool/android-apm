@@ -21,6 +21,7 @@ Kotlin IR의 fake override에는 실행 본문이 없다. 수집기는 해당 �
 - Material Button 계열의 정확한 API 심벌에 클릭 슬롯을 추가했다. 동명의 사용자 함수는 자동으로 트리거가 되지 않으며 enabled=false는 이동을 만들지 않는다.
 - 이벤트 해석을 렌더링에서 분리하고 composition effect의 구독을 먼저 등록한다. 버튼과 collector의 소스 선언 순서가 연결 결과를 바꾸지 않도록 한다.
 - 화면 내부 Channel collector는 동일한 stream identity와 현재 화면 문맥이 필요하다. 다른 화면의 collector는 현재 화면의 송신을 받는 것으로 연결하지 않는다. 전역 collector는 기존 host/stack 소유권 검사를 유지한다.
+  필드의 receiver가 미입증이면 화면 문맥으로 소유권을 대체하지 않는다. 로컬 Channel 생성과 객체 필드 Channel의 소유 근거를 구분한다.
 - `LocalActivity`의 기본 owner는 Activity의 onCreate → activity.compose.setContent 근거가 있을 때만 제공한다. 명시적 provider가 있으면 그 값을 우선한다. Hilt ViewModel은 증명된 owner와 상수 key로 구분하고, 알 수 없는 owner/key는 미해결이다.
 - `runCatching`과 Result의 성공·실패 callback에는 동일 결과에 대한 상반된 조건을 유지한다. 명시적 throw 뒤에 성공 callback을 실행하지 않는다. 지원하지 않는 예외 처리 전체를 해석한다고 주장하지 않는다.
 - Activity 결과는 등록된 launcher 객체가 실제 launch 호출의 receiver로 이어져야 전달한다. callback 등록만으로 경로가 생기지 않는다. 외부 Activity의 실행과 결과 전달은 조건이며 `ACTIVITY_RESULT_TRANSFER` 근거를 남긴다.

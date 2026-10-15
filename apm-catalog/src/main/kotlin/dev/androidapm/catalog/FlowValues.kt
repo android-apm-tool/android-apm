@@ -313,8 +313,13 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
                         if (map?.get("kind") == "MAP_VALUE" && index?.get("kind") == "CONSTANT") map.records("entries").lastOrNull { it["key"] == index }?.get("value").record().ifEmpty { constant(null) }
                         else unknown("MAP_LOOKUP_UNRESOLVED", call.string("id"))
                     }
-                    name == "kotlinx.coroutines.channels.Channel" -> record("kind" to "STREAM", "identity" to "channel:" + call.string("id") + ":" + (env["@receiver"]?.get("identity") ?: env["@allocationContext"]?.get("ref") ?: env["@context"]?.get("ref") ?: "OWNER_UNRESOLVED"),
-                        "streamKind" to "CHANNEL", "ownerProven" to (env["@receiver"]?.get("identity") != null || env.containsKey("@context")), "allocationRef" to call["id"])
+                    name == "kotlinx.coroutines.channels.Channel" -> {
+                        val receiver = env["@receiver"]
+                        val owner = if (receiver == null) env["@allocationContext"]?.get("ref") ?: env["@context"]?.get("ref")
+                            else receiver.takeIf { it["kind"] == "INSTANCE" }?.get("identity")
+                        record("kind" to "STREAM", "identity" to "channel:" + call.string("id") + ":" + (owner ?: "OWNER_UNRESOLVED"),
+                            "streamKind" to "CHANNEL", "ownerProven" to (owner != null), "allocationRef" to call["id"])
+                    }
                     name == "kotlinx.coroutines.flow.receiveAsFlow" -> args.values.firstOrNull()?.takeIf { it["kind"] == "STREAM" }
                         ?.plus(record("adapter" to "receiveAsFlow")) ?: unknown("STREAM_IDENTITY_UNRESOLVED", call.string("id"))
                     name in setOf("kotlin.internal.ir.EQEQ", "kotlin.internal.ir.EQEQEQ", "kotlin.Boolean.not") -> {

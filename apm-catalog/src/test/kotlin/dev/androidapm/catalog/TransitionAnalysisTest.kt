@@ -4,6 +4,15 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class TransitionAnalysisTest {
+    @Test fun `unproven field receivers cannot borrow the screen context as Channel ownership`() {
+        val flow = FlowValues(record("callRelations" to listOf(call("channel", "kotlinx.coroutines.channels.Channel", emptyList()))))
+        val expr = record("kind" to "CALL", "callId" to "channel")
+        val env = mapOf("@context" to record("ref" to "screen"))
+        assertEquals(true, flow.eval(expr, env)["ownerProven"])
+        assertEquals(false, flow.eval(expr, env + ("@receiver" to record("kind" to "UNKNOWN")))["ownerProven"])
+        fun owned(id: String) = flow.eval(expr, env + ("@receiver" to record("kind" to "INSTANCE", "identity" to id)))
+        assertNotEquals(owned("one")["identity"], owned("two")["identity"])
+    }
     @Test fun `LocalActivity field form needs proven Activity context and respects explicit providers`() {
         val getter = call("currentActivity", "androidx.compose.runtime.ProvidableCompositionLocal.<get-current>", listOf(argument("this", reference("androidx.activity.compose.LocalActivity"), "DispatchReceiver")))
         val flow = FlowValues(record("callRelations" to listOf(getter)))
