@@ -1,9 +1,15 @@
 package dev.androidapm.catalog
 
 import java.security.MessageDigest
+import java.security.DigestOutputStream
+import java.io.OutputStream
+import java.io.OutputStreamWriter
 
-internal fun fingerprint(value: Any?): String = MessageDigest.getInstance("SHA-256")
-    .digest(Json.encode(value).toByteArray(Charsets.UTF_8)).take(16).joinToString("") { "%02x".format(it) }
+internal fun fingerprint(value: Any?): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    OutputStreamWriter(DigestOutputStream(OutputStream.nullOutputStream(), digest), Charsets.UTF_8).buffered().use { Json.write(value, it) }
+    return digest.digest().take(16).joinToString("") { "%02x".format(it) }
+}
 
 data class UiAnalysisResult(val report: Record, val evidence: Record)
 

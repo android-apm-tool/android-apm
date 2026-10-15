@@ -15,7 +15,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -37,6 +37,8 @@ jobs:
         run: python3 scripts/verify-catalog.py
       - name: Verify UI diagnosis and design matching
         run: python3 scripts/verify-ui-analysis.py
+      - name: Verify transition evidence and query cache boundaries
+        run: python3 scripts/verify-transitions.py
       - name: Upload verification reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -48,3 +50,25 @@ jobs:
             build/bootstrap-verification/
             build/catalog-verification/
             build/ui-verification/
+            build/transition-verification/
+
+  offline-boundary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Prepare public test tools before isolation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap strace openjdk-17-jdk-headless
+          # Ephemeral hosted runner, PUBLIC synthetic fixtures only. Production must
+          # configure its own approved user-namespace policy; the runner never relaxes it.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo sysctl -w kernel.core_pattern=core
+          JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew --version
+      - name: Verify OS boundary, descendants, cancellation and bundle integrity
+        run: python3 scripts/test_offline_runner.py
+      - name: Verify real settings, buildSrc, child JVM and offline dependency failure
+        run: |
+          prepared_gradle=$(find "${GRADLE_USER_HOME:-$HOME/.gradle}/wrapper/dists/gradle-9.1.0-bin" -type d -name gradle-9.1.0 -print -quit)
+          python3 scripts/verify-offline-gradle.py --gradle-home "$prepared_gradle"

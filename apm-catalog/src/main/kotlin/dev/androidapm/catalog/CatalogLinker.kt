@@ -7,7 +7,7 @@ object CatalogLinker {
     fun link(modules: List<Record>): Record = Linker(modules).link()
 
     private class Linker(val modules: List<Record>) {
-        val kinds = listOf("functions", "composableDeclarations", "values", "callRelations", "entryDeclarations", "providers", "uiRoots", "navHosts", "contentContainers", "diBindings", "diagnostics", "analysisCallTargets")
+        val kinds = listOf("functions", "composableDeclarations", "values", "callRelations", "entryDeclarations", "providers", "uiRoots", "navHosts", "contentContainers", "diBindings", "classes", "writes", "functionBodies", "diagnostics", "analysisCallTargets")
         val data = kinds.associateWith { kind -> modules.flatMap { it.records(kind) }.distinctBy { it["id"] ?: it["ref"] ?: it["symbol"] ?: it } }
         val functions = data.getValue("functions").associateBy { it.string("symbol") }
         val values = data.getValue("values").associateBy { it.string("ref") }
@@ -104,6 +104,8 @@ object CatalogLinker {
                 "scope" to record("modules" to modules.map { record("moduleId" to it["moduleId"], "scope" to it["scope"]) }),
             )
             return base + data + record(
+                "factsCapabilities" to modules.map { (it["factsCapabilities"] as? List<*>)?.filterIsInstance<String>()?.toSet().orEmpty() }
+                    .reduceOrNull { a, b -> a.intersect(b) }.orEmpty().sorted(),
                 "entryBindings" to bindings.distinctBy { Json.encode(it) }.sortedBy { it.string("id") },
                 "providers" to (data.getValue("providers") + directProviders).sortedBy { it.string("id") },
                 "navHostBindings" to hostBindings,

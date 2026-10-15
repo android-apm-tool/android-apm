@@ -35,6 +35,9 @@ internal class CatalogCollector(
     private val containers = linkedMapOf<String, Record>()
     private val diagnostics = linkedMapOf<String, Record>()
     private val diBindings = linkedMapOf<String, Record>()
+    private val classes = linkedMapOf<String, Record>()
+    private val writes = linkedMapOf<String, Record>()
+    private val bodies = linkedMapOf<String, Record>()
     private val files = sortedSetOf<String>()
     private lateinit var file: IrFile
     private var owner = ""
@@ -47,6 +50,16 @@ internal class CatalogCollector(
             owner = "file:" + relative(source.fileEntry.name)
             source.acceptChildrenVoid(object : IrVisitorVoid() {
                 override fun visitElement(element: IrElement) = element.acceptChildrenVoid(this)
+                override fun visitClass(declaration: IrClass) {
+                    val name = symbol(declaration)
+                    classes[name] = record("symbol" to name, "kind" to declaration.kind.name,
+                        "superTypes" to declaration.superTypes.map { it.render() },
+                        "annotations" to annotationFacts(declaration),
+                        "fields" to declaration.declarations.filterIsInstance<IrProperty>().mapNotNull { it.backingField }.map {
+                            record("ref" to symbol(it), "name" to it.name.asString(), "type" to it.type.render(), "mutable" to !it.isFinal, "annotations" to annotationFacts(it))
+                        }, "source" to location(declaration))
+                    super.visitClass(declaration)
+                }
                 override fun visitFunction(declaration: IrFunction) {
                     if (declaration is IrSimpleFunction && declaration.isFakeOverride) return
                     if (declaration.origin == IrDeclarationOrigin.GENERATED_DATA_CLASS_MEMBER) return
@@ -63,13 +76,19 @@ internal class CatalogCollector(
                         "overridable" to (declaration is IrSimpleFunction && declaration.modality != org.jetbrains.kotlin.descriptors.Modality.FINAL),
                         "enclosingFunction" to previous,
                         "returnType" to declaration.returnType.render(),
+                        "classOwner" to (declaration.parent as? IrClass)?.let(::symbol),
+                        "constructor" to (declaration is IrConstructor),
+                        "annotationFacts" to annotationFacts(declaration),
                         "overrides" to ((declaration as? IrSimpleFunction)?.overriddenSymbols?.mapNotNull { it.owner.fqNameWhenAvailable?.asString() } ?: emptyList<String>()),
+                        "overrideSymbols" to ((declaration as? IrSimpleFunction)?.overriddenSymbols?.map { symbol(it.owner) } ?: emptyList<String>()),
                         "annotations" to declaration.annotations.mapNotNull { it.symbol.owner.parentAsClass.fqNameWhenAvailable?.asString() },
                         "preview" to declaration.annotations.any { isPreview(it) },
                         "sourceSet" to relative(file.fileEntry.name).substringAfter("/src/", "unknown").substringBefore('/'),
-                        "parameters" to declaration.parameters.map { p -> record("ref" to symbol(p), "name" to p.name.asString(), "type" to p.type.render(), "composableType" to composableType(p.type)) },
+                        "parameters" to declaration.parameters.mapIndexed { index, p -> record("ref" to symbol(p), "name" to p.name.asString(), "type" to p.type.render(), "composableType" to composableType(p.type),
+                            "index" to index, "kind" to p.kind.name, "defaultValue" to p.defaultValue?.expression?.let { expression(it) }, "annotations" to annotationFacts(p)) },
                         "source" to location(declaration),
                     )
+                    declaration.body?.let { body -> bodies[owner] = record("owner" to owner, "body" to flowStatement(body)) }
                     val annotations = declaration.annotations.mapNotNull { it.symbol.owner.parentAsClass.fqNameWhenAvailable?.asString() }
                     if (annotations.any { it in setOf("dagger.Provides", "dagger.Binds", "dagger.multibindings.Multibinds") }) {
                         val navigation = declaration.returnType.render().let { "EntryProviderScope" in it || "NavEntry" in it }
@@ -82,12 +101,14 @@ internal class CatalogCollector(
                     owner = previous
                 }
                 override fun visitVariable(declaration: IrVariable) {
-                    declaration.initializer?.let { values[symbol(declaration)] = record("ref" to symbol(declaration), "value" to expression(it), "mutable" to declaration.isVar) }
+                    declaration.initializer?.let { values[symbol(declaration)] = record("ref" to symbol(declaration), "value" to expression(it), "mutable" to declaration.isVar,
+                        "owner" to owner, "source" to location(declaration), "storage" to "LOCAL") }
                     super.visitVariable(declaration)
                 }
                 override fun visitField(declaration: IrField) {
                     declaration.initializer?.expression?.let {
-                        values[symbol(declaration)] = record("ref" to symbol(declaration), "value" to expression(it), "mutable" to !declaration.isFinal)
+                        values[symbol(declaration)] = record("ref" to symbol(declaration), "value" to expression(it), "mutable" to !declaration.isFinal,
+                            "owner" to owner, "classOwner" to (declaration.parent as? IrClass)?.let(::symbol), "source" to location(declaration), "storage" to "FIELD")
                     }
                     super.visitField(declaration)
                 }
@@ -95,9 +116,23 @@ internal class CatalogCollector(
                     val target = expression.returnTargetSymbol.owner as? IrFunction
                     if (target != null) {
                         val key = symbol(target) + "#return@" + expression.startOffset
-                        values[key] = record("ref" to key, "returnOf" to symbol(target), "value" to expression(expression.value))
+                        values[key] = record("ref" to key, "returnOf" to symbol(target), "value" to expression(expression.value),
+                            "conditions" to conditions.toList(), "source" to location(expression))
                     }
                     super.visitReturn(expression)
+                }
+                override fun visitSetValue(expression: IrSetValue) {
+                    val key = id("write-local", expression)
+                    writes[key] = record("id" to key, "owner" to owner, "kind" to "LOCAL", "ref" to symbol(expression.symbol.owner),
+                        "value" to expression(expression.value), "conditions" to conditions.toList(), "source" to location(expression))
+                    super.visitSetValue(expression)
+                }
+                override fun visitSetField(expression: IrSetField) {
+                    val key = id("write-field", expression)
+                    writes[key] = record("id" to key, "owner" to owner, "kind" to "FIELD", "ref" to symbol(expression.symbol.owner),
+                        "receiver" to expression.receiver?.let { expression(it) }, "value" to expression(expression.value),
+                        "conditions" to conditions.toList(), "source" to location(expression))
+                    super.visitSetField(expression)
                 }
                 override fun visitWhen(expression: IrWhen) {
                     val preceding = mutableListOf<Record>()
@@ -122,6 +157,7 @@ internal class CatalogCollector(
         }
         val catalog = record(
             "schemaVersion" to 1, "moduleId" to module, "variant" to variant,
+            "factsCapabilities" to listOf("PARAMETER_DEFAULTS_V1", "CLASS_METADATA_V1", "ASSIGNMENTS_V1", "EXPLICIT_ARGUMENT_POSITIONS_V1", "CONTROL_FLOW_IR_V1", "EXPRESSION_CONTROL_FLOW_V1"),
             "collectionStatus" to "COMPLETE_FOR_DECLARED_INPUTS",
             "scope" to record("files" to files, "mode" to "FULL_COMPILATION", "adapter" to "nav3-runtime-1.0.1-1.1.2-v1"),
             "functions" to functions.values.sortedBy { it.string("symbol") },
@@ -134,6 +170,9 @@ internal class CatalogCollector(
             "navHosts" to hosts.values.sortedBy { it.string("id") },
             "contentContainers" to containers.values.sortedBy { it.string("id") },
             "diBindings" to diBindings.values.sortedBy { it.string("symbol") },
+            "classes" to classes.values.sortedBy { it.string("symbol") },
+            "writes" to writes.values.sortedBy { it.string("id") },
+            "functionBodies" to bodies.values.sortedBy { it.string("owner") },
             "diagnostics" to diagnostics.values.sortedBy { it.string("id") },
             "collectionDiagnostics" to diagnostics.values.sortedBy { it.string("id") },
         )
@@ -147,6 +186,9 @@ internal class CatalogCollector(
         val args = arguments(call)
         val callId = id("call:$fq", call)
         val data = record("id" to callId, "owner" to owner, "target" to symbol(target), "name" to fq,
+            "returnType" to target.returnType.render(), "constructor" to (target is IrConstructor),
+            "classOwner" to (target.parent as? IrClass)?.let(::symbol),
+            "parameterSchema" to target.parameters.mapIndexed { index, p -> record("ref" to symbol(p), "name" to p.name.asString(), "type" to p.type.render(), "index" to index, "kind" to p.kind.name, "hasDefault" to (p.defaultValue != null)) },
             "composable" to target.hasAnnotation(FqName("androidx.compose.runtime.Composable")),
             "typeBindings" to target.typeParameters.mapIndexedNotNull { index, parameter ->
                 call.typeArguments.getOrNull(index)?.let { record("parameter" to typeParameterSymbol(parameter), "value" to typeFact(it)) }
@@ -173,9 +215,10 @@ internal class CatalogCollector(
         }
     }
 
-    private fun arguments(call: IrFunctionAccessExpression): List<Record> = call.symbol.owner.parameters.mapIndexedNotNull { index, param ->
+    private fun arguments(call: IrMemberAccessExpression<*>): List<Record> = (call.symbol.owner as IrFunction).parameters.mapIndexedNotNull { index, param ->
         val value = call.arguments.getOrNull(index) ?: return@mapIndexedNotNull null
         record("parameter" to symbol(param), "name" to param.name.asString(), "value" to expression(value),
+            "index" to index, "parameterKind" to param.kind.name, "type" to param.type.render(), "origin" to "EXPLICIT",
             "composableType" to composableType(param.type))
     }
 
@@ -191,12 +234,15 @@ internal class CatalogCollector(
                 else -> constant
             })
             is IrFunctionExpression -> record("kind" to "FUNCTION", "ref" to symbol(value.function))
-            is IrFunctionReference -> record("kind" to "FUNCTION", "ref" to symbol(value.symbol.owner))
+            is IrFunctionReference -> record("kind" to "FUNCTION", "ref" to symbol(value.symbol.owner), "boundArguments" to arguments(value))
             is IrGetValue -> record("kind" to "REFERENCE", "ref" to symbol(value.symbol.owner))
             is IrGetObjectValue -> record("kind" to "OBJECT", "ref" to value.symbol.owner.fqNameWhenAvailable?.asString())
+            is IrGetEnumValue -> record("kind" to "ENUM", "ref" to value.symbol.owner.fqNameWhenAvailable?.asString())
             is IrGetField -> record("kind" to "REFERENCE", "ref" to symbol(value.symbol.owner),
                 "property" to value.symbol.owner.name.asString(), "receiver" to value.receiver?.let(::next))
-            is IrTypeOperatorCall -> next(value.argument)
+            is IrTypeOperatorCall -> if (value.operator in setOf(IrTypeOperator.INSTANCEOF, IrTypeOperator.NOT_INSTANCEOF))
+                record("kind" to "TYPE_TEST", "value" to next(value.argument), "testedType" to value.typeOperand.render(), "negated" to (value.operator == IrTypeOperator.NOT_INSTANCEOF))
+                else next(value.argument)
             is IrFunctionAccessExpression -> {
                 val target = value.symbol.owner
                 val property = (target as? IrSimpleFunction)?.correspondingPropertySymbol?.owner
@@ -207,9 +253,22 @@ internal class CatalogCollector(
                     "callId" to id("call:${target.fqNameWhenAvailable?.asString().orEmpty()}", value),
                     "target" to symbol(target), "name" to target.fqNameWhenAvailable?.asString())
             }
-            is IrWhen -> record("kind" to "CHOICE", "values" to value.branches.map { next(it.result) })
-            is IrContainerExpression -> (value.statements.lastOrNull() as? IrExpression)?.let(::next) ?: record("kind" to "UNKNOWN")
-            is IrVararg -> record("kind" to "LIST", "values" to value.elements.mapNotNull { (it as? IrExpression)?.let(::next) })
+            is IrWhen -> record("kind" to "CHOICE", "values" to value.branches.map { next(it.result) },
+                "choiceGroupId" to id("choice", value), "alternatives" to value.branches.mapIndexed { index, branch -> record(
+                    "value" to next(branch.result), "test" to next(branch.condition), "excluded" to value.branches.take(index).map { next(it.condition) }) })
+            is IrStringConcatenation -> record("kind" to "STRING_CONCAT", "values" to value.arguments.map(::next))
+            is IrReturn -> record("kind" to "RETURN_EXPRESSION", "target" to symbol(value.returnTargetSymbol.owner as IrFunction), "value" to next(value.value))
+            is IrThrow -> record("kind" to "THROW_EXPRESSION", "value" to next(value.value))
+            is IrContainerExpression -> {
+                val result = (value.statements.lastOrNull() as? IrExpression)?.let(::next) ?: record("kind" to "UNKNOWN")
+                if (value.statements.size <= 1) result else record("kind" to "BLOCK_EXPRESSION", "expressionId" to id("expression-block", value),
+                    "statements" to value.statements.dropLast(1).map { flowStatement(it, depth + 1) }, "value" to result)
+            }
+            is IrVararg -> record("kind" to "LIST", "values" to value.elements.map { element -> when (element) {
+                is IrSpreadElement -> record("kind" to "SPREAD", "value" to next(element.expression))
+                is IrExpression -> next(element)
+                else -> record("kind" to "UNKNOWN", "reason" to "VARARG_ELEMENT_UNMODELED")
+            } })
             is IrClassReference -> record("kind" to "TYPE", "type" to value.classType.render())
             else -> record("kind" to "UNKNOWN", "expressionType" to value.javaClass.simpleName)
         }
@@ -217,6 +276,36 @@ internal class CatalogCollector(
 
     private fun composableType(type: IrType): Boolean = type.annotations.any {
         it.symbol.owner.parentAsClass.fqNameWhenAvailable?.asString() == "androidx.compose.runtime.Composable"
+    }
+
+    private fun annotationFacts(declaration: IrAnnotationContainer): List<Record> = declaration.annotations.map { annotation ->
+        record("name" to annotation.symbol.owner.parentAsClass.fqNameWhenAvailable?.asString(),
+            "arguments" to annotation.symbol.owner.parameters.mapIndexedNotNull { index, p ->
+                annotation.arguments.getOrNull(index)?.let { record("name" to p.name.asString(), "value" to expression(it)) }
+            })
+    }
+
+    /** Ordered source operations, not a claim that exceptional/coroutine control flow is complete. */
+    private fun flowStatement(element: IrElement, depth: Int = 0): Record {
+        if (depth > 48) return record("op" to "UNKNOWN", "reason" to "IR_BODY_DEPTH_LIMIT", "source" to location(element))
+        fun next(e: IrElement) = flowStatement(e, depth + 1)
+        val base = record("source" to location(element))
+        return base + when (element) {
+            is IrBlockBody -> record("op" to "BLOCK", "statements" to element.statements.map(::next))
+            is IrExpressionBody -> next(element.expression)
+            is IrContainerExpression -> record("op" to "BLOCK", "statements" to element.statements.map(::next))
+            is IrVariable -> record("op" to "DECLARE", "ref" to symbol(element), "mutable" to element.isVar, "value" to element.initializer?.let { expression(it) })
+            is IrSetValue -> record("op" to "WRITE", "ref" to symbol(element.symbol.owner), "value" to expression(element.value))
+            is IrSetField -> record("op" to "WRITE_FIELD", "ref" to symbol(element.symbol.owner), "receiver" to element.receiver?.let { expression(it) }, "value" to expression(element.value))
+            is IrReturn -> record("op" to "RETURN", "target" to symbol(element.returnTargetSymbol.owner as IrFunction), "value" to expression(element.value))
+            is IrWhen -> record("op" to "BRANCH", "branches" to element.branches.map { record("test" to expression(it.condition), "body" to next(it.result)) })
+            is IrThrow -> record("op" to "THROW", "value" to expression(element.value))
+            is IrLoop -> record("op" to "LOOP", "condition" to expression(element.condition), "body" to element.body?.let(::next))
+            is IrTry -> record("op" to "TRY", "body" to next(element.tryResult), "catches" to element.catches.map { next(it.result) }, "finally" to element.finallyExpression?.let(::next))
+            is IrFunctionAccessExpression -> record("op" to "CALL", "value" to expression(element))
+            is IrExpression -> record("op" to "EVALUATE", "value" to expression(element))
+            else -> record("op" to "DECLARATION", "elementType" to element.javaClass.simpleName)
+        }
     }
 
     private fun isPreview(annotation: IrConstructorCall, seen: Set<String> = emptySet()): Boolean {
@@ -238,13 +327,19 @@ internal class CatalogCollector(
         is IrClass -> declaration.fqNameWhenAvailable?.asString() ?: "$module:${relative(file.fileEntry.name)}@${declaration.startOffset}:class"
         is IrFunction -> {
             val name = declaration.fqNameWhenAvailable?.asString()
-            val prefix = if (declaration.name.isSpecial && declaration !is IrConstructor || name == null ||
+            // Accessors have special names too, but public/member accessors are
+            // declarations shared across modules, not source-local lambdas.
+            val accessor = declaration is IrSimpleFunction && declaration.correspondingPropertySymbol != null
+            val prefix = if (declaration.name.isSpecial && declaration !is IrConstructor && !accessor || name == null ||
                 declaration.parent is IrFunction || declaration.parent is IrFile && declaration.visibility == DescriptorVisibilities.PRIVATE) {
                 module + ":" + relative(declaration.fileOrNull?.fileEntry?.name ?: file.fileEntry.name) + "@" + declaration.startOffset + ":" + declaration.name
             } else name
             prefix + "(" + declaration.parameters.joinToString(",") { it.type.render() } + ")"
         }
-        is IrField -> if (declaration.parent is IrFile && declaration.visibility == DescriptorVisibilities.PRIVATE)
+        // A public top-level property's backing field is private in its defining
+        // module, but external IR references use the property's qualified name.
+        is IrField -> if (declaration.parent is IrFile &&
+            (declaration.correspondingPropertySymbol?.owner?.visibility ?: declaration.visibility) == DescriptorVisibilities.PRIVATE)
             "$module:${relative(declaration.fileOrNull?.fileEntry?.name ?: file.fileEntry.name)}@${declaration.startOffset}:field"
             else declaration.fqNameWhenAvailable?.asString() ?: "$module:${relative(file.fileEntry.name)}@${declaration.startOffset}:field"
         is IrVariable -> "${(declaration.parent as? IrFunction)?.let(::symbol) ?: module}#local:${declaration.name}@${declaration.startOffset}"

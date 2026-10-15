@@ -2,6 +2,8 @@
 
 기준일: 2026-10-14. 이 문서는 [엔진 도입 PR #5](https://github.com/android-apm-tool/android-apm/pull/5) 시점의 룰업 누락 조사, 설계 오류, 오픈소스 엔진 채택 이유와 구현 범위를 기록한다. 이전 카탈로그 검증은 [09번 문서](09-catalog-decisions-and-validation.md), 이후 미연결 진단·분류·디자인 대응 구현과 최신 검증은 [11번 문서](11-ui-diagnosis-and-design-matching.md)에 남긴다.
 
+2026-10-15 후속 설계는 [12번 전환·접근 경로](12-transition-and-access-path-design.md)와 [13번 외부 전송 차단](13-local-analysis-security.md)에 정리한다. 기존 엔진을 AI 없이 확장하고, 고객 코드 실행에는 별도 격리 계약을 적용한다. 아래 구현·검증 기록은 해당 격리 기능이 이미 구현됐다는 의미가 아니다.
+
 ## 대화에서 확인한 문제
 
 처음에는 Nav3 등록을 모으면 화면 목록에 가까워질 것으로 보았다. 룰업에서는 단일 `entry<GenericNavKey>`와 경로 테이블의 48개 render 등록을 수집했다. 그러나 등록 위치를 아는 것, 그 내부의 모든 UI 함수를 따라가는 것, 함수의 역할을 화면/틀/부품으로 분류하는 것은 서로 다른 문제였다.

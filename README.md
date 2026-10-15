@@ -11,6 +11,9 @@ Gradle/K2 IR 플러그인으로 Composable과 Nav3 entry·content 관계를 수�
 - [카탈로그 구현 결정과 샘플·룰업 검증](docs/09-catalog-decisions-and-validation.md)
 - [SootUp/Heros 채택 배경·반례·전체 파이프라인](docs/10-sootup-heros-analysis.md)
 - [미연결 원인·문맥별 역할·디자인 대응](docs/11-ui-diagnosis-and-design-matching.md)
+- [AI 없는 화면 연결·접근 경로 설계](docs/12-transition-and-access-path-design.md)
+- [로컬 실행과 외부 전송 차단 설계](docs/13-local-analysis-security.md)
+- [전환 분석·격리 runner 구현과 검증](docs/14-offline-transitions-implementation.md)
 - [설계 문서 목차](docs/README.md)
 - [제품 요구사항과 확정된 화면 구성](docs/01-product-requirements.md)
 - [시스템 구조](docs/02-system-architecture.md)
@@ -26,9 +29,11 @@ JDK 17에서 플러그인을 빌드하고 테스트한다. 샘플 검증에는 A
 ./gradlew -p samples/compose-app :app:apmDoctor
 ./gradlew -p samples/compose-app :app:apmMergeDebugCatalog
 ./gradlew -p samples/compose-app :app:apmMatchDebugDesign -Papm.designSpec=design-cases.json
+./gradlew -p samples/compose-app :app:apmFindDebugAccessPaths
 python3 scripts/verify-bootstrap.py
 python3 scripts/verify-catalog.py
 python3 scripts/verify-ui-analysis.py
+python3 scripts/verify-transitions.py
 ```
 
 개발용 IR probe는 기본 비활성 상태이며 `-Papm.irProbe=true` 또는 `gradle.properties`의 `apm.irProbe=true`로 켠다. 일반 debug 빌드에서 마지막 IR 진단 결과를 출력하며, 컴파일이 `UP-TO-DATE`이거나 `FROM-CACHE`여도 결과를 확인할 수 있다. 샘플은 included build로 로컬 플러그인을 사용한다. 아직 외부 배포한 플러그인이 아니다.

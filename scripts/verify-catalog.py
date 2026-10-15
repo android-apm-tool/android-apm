@@ -35,7 +35,8 @@ def catalog():
 assert not EXTRA.exists(), "Refusing to overwrite an existing source"
 original = SOURCE.read_bytes()
 try:
-    run("normal-before", ":app:assembleDebug")
+    # Seed task output caches even if an earlier manual run used --no-build-cache.
+    run("normal-before", ":app:clean", ":app:assembleDebug")
     run("collect", ":app:apmMergeDebugCatalog")
     baseline = REPORT.read_bytes()
     value = catalog()
