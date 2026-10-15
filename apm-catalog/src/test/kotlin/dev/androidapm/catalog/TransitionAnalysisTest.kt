@@ -4,6 +4,15 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
 class TransitionAnalysisTest {
+    @Test fun `LocalActivity field form needs proven Activity context and respects explicit providers`() {
+        val getter = call("currentActivity", "androidx.compose.runtime.ProvidableCompositionLocal.<get-current>", listOf(argument("this", reference("androidx.activity.compose.LocalActivity"), "DispatchReceiver")))
+        val flow = FlowValues(record("callRelations" to listOf(getter)))
+        val expression = record("kind" to "CALL", "callId" to "currentActivity")
+        val owner = record("kind" to "ACTIVITY_OWNER", "identity" to "activity:One")
+        assertEquals(owner, flow.eval(expression, mapOf("@activityOwner" to owner)))
+        assertEquals("UNKNOWN", flow.eval(expression)["kind"])
+        assertEquals(constant(null), flow.eval(expression, mapOf("@activityOwner" to owner, "@local:androidx.activity.compose.LocalActivity" to constant(null))))
+    }
     @Test fun `screen collectors resolve independently of declaration order without crossing screens or channels`() {
         for (sameChannel in listOf(true, false)) for (sameScreen in listOf(true, false)) {
             val base = fixture(action = listOf(statement("send")))

@@ -5,18 +5,18 @@ data class TransitionResult(val report: Record, val evidence: Record)
 /** Bounded source interpreter; runtime reachability and unsupported dispatch stay explicit. */
 object TransitionAnalysis {
     const val version = "transitions-v1"
-    fun create(catalog: Record, onContext: (Int, Int) -> Unit = { _, _ -> }): TransitionResult {
+    fun create(catalog: Record, onEvents: (String, Int, Int) -> Unit = { _, _, _ -> }, onContext: (Int, Int) -> Unit = { _, _ -> }): TransitionResult {
         require(catalog.strings("factsCapabilities").containsAll(setOf("CONTROL_FLOW_IR_V1", "PARAMETER_DEFAULTS_V1", "ASSIGNMENTS_V1", "EXPRESSION_CONTROL_FLOW_V1"))) { "TRANSITION_FACTS_RECOLLECTION_REQUIRED" }
-        return Analyzer(catalog, onContext).run()
+        return Analyzer(catalog, onContext, onEvents).run()
     }
     private data class Frame(val env: Map<String, Record> = emptyMap(), val guards: List<Record> = emptyList(),
         val effects: List<String> = emptyList(), val trace: List<String> = emptyList(), val uncertain: Boolean = false,
         val stop: String = "", val value: Record = emptyMap())
     // Recursion detection is in-memory equality, not a persisted evidence ID.
     // Avoid serializing a large captured environment at every invocation.
-    private data class Invocation(val function: String, val environment: Map<String, Record>, val event: String?)
+    private data class Invocation(val function: String, val environment: Any, val event: String?)
     private data class PendingTrigger(val id: String, val callback: Record, val frame: Frame, val context: Record)
-    private class Analyzer(val catalog: Record, val onContext: (Int, Int) -> Unit) {
+    private class Analyzer(val catalog: Record, val onContext: (Int, Int) -> Unit, val onEvents: (String, Int, Int) -> Unit) {
         val flow = FlowValues(catalog)
         val evidence = linkedMapOf<String, Record>()
         val contexts = mutableListOf<Record>()
@@ -91,9 +91,16 @@ object TransitionAnalysis {
             // Register subscriptions before interpreting emissions. Source order
             // of a Button and its LaunchedEffect must not change the graph.
             collectingEvents = true
-            pendingTriggers.filter { triggers[it.id]?.get("kind") == "COMPOSITION_EFFECT" }.forEach(::executeTrigger)
+            val subscriptions = pendingTriggers.filter { triggers[it.id]?.get("kind") == "COMPOSITION_EFFECT" }
+            subscriptions.forEachIndexed { index, pending ->
+                if (index % 100 == 0 || index == subscriptions.lastIndex) onEvents("subscriptions", index + 1, subscriptions.size)
+                executeTrigger(pending)
+            }
             collectingEvents = false
-            pendingTriggers.forEach(::executeTrigger)
+            pendingTriggers.forEachIndexed { index, pending ->
+                if (index % 100 == 0 || index == pendingTriggers.lastIndex) onEvents("triggers", index + 1, pendingTriggers.size)
+                executeTrigger(pending)
+            }
             contexts.indices.forEach { index ->
                 val c = contexts[index]
                 if (c["definitionStatus"] == "LOOKUP_REQUIRES_RENDER_PROOF") {
@@ -147,7 +154,7 @@ object TransitionAnalysis {
                 else env.putIfAbsent(p.string("ref"), p["defaultValue"].record().takeIf { it.isNotEmpty() }?.let { flow.eval(it, env) }
                     ?: record("kind" to "SYMBOLIC", "ref" to p["ref"], "type" to p["type"]))
             }
-            val key = Invocation(ref, env.toMap(), event)
+            val key = Invocation(ref, flow.environmentKey(env), event)
             if (key in seen) { problem("RECURSIVE_CONTROL_FLOW", ref, c.string("id")); return listOf(parent.copy(uncertain = true)) }
             val before = cutoffs
             val returned = walk(body, parent.copy(env = env, value = emptyMap()), c, event, seen + key, depth + 1).map {

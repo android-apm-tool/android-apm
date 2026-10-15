@@ -18,7 +18,22 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
     val injection = InjectionModel(this)
     private var evaluations = 0
     private var context = ""
-    private data class EvalKey(val expression: Record, val environment: Map<String, Record>, val depth: Int, val seen: Set<String>)
+    /** Values are immutable records; bindings may be filled incrementally. Cache
+     * the structural hash only after taking and checking a binding snapshot. */
+    private class Environment(val bindings: Map<String, Record>) {
+        private val hash = bindings.hashCode()
+        override fun hashCode() = hash
+        override fun equals(other: Any?) = this === other || other is Environment && hash == other.hash && bindings == other.bindings
+    }
+    private val environments = java.util.IdentityHashMap<Map<String, Record>, Environment>()
+    private fun snapshot(env: Map<String, Record>): Environment {
+        val old = environments[env]
+        if (old != null && old.bindings.size == env.size && env.all { (key, value) -> old.bindings[key] === value }) return old
+        if (environments.size >= 20_000) environments.clear()
+        return Environment(env.toMap()).also { environments[env] = it }
+    }
+    fun environmentKey(env: Map<String, Record>): Any = snapshot(env)
+    private data class EvalKey(val expression: Record, val environment: Environment, val depth: Int, val seen: Set<String>)
     private fun newMemo() = object : LinkedHashMap<EvalKey, Record>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<EvalKey, Record>?) = size > 20_000
     }
@@ -30,18 +45,19 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
         memo = newMemo()
         return try { block() } finally { evaluations = savedEvaluations; memo = savedMemo }
     }
-    private val environmentDigests = object : LinkedHashMap<Map<String, Record>, String>(256, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Map<String, Record>, String>?) = size > 20_000
+    private val environmentDigests = object : LinkedHashMap<Environment, String>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Environment, String>?) = size > 20_000
     }
     private val closureKeys = object : LinkedHashMap<Pair<String, Map<String, Record>>, String>(256, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Pair<String, Map<String, Record>>, String>?) = size > 20_000
     }
     private fun environmentDigest(env: Map<String, Record>): String =
-        environmentDigests.getOrPut(env.toMap()) { fingerprint(env) }
+        environmentDigests.getOrPut(snapshot(env)) { fingerprint(env) }
     fun beginContext(ref: String) {
         context = ref
         evaluations = 0
         memo.clear()
+        environments.clear()
         environmentDigests.clear()
         closureKeys.clear()
     }
@@ -153,7 +169,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
         if (expr["kind"] in setOf("ENUM", "SYMBOLIC", "INSTANCE", "STACK", "STREAM", "LIST_VALUE", "MAP_VALUE", "UNKNOWN", "PREDICATE", "OPAQUE", "COMPOSITION_LOCAL", "PROVIDED_LOCAL", "PAIR", "TYPE", "RESULT_VALUE", "ACTIVITY_OWNER", "ACTIVITY_LAUNCHER")) return expr
         // Parameter binding fills a mutable map incrementally. A cache key must
         // retain the environment at evaluation time, not a later mutation.
-        val key = EvalKey(expr, env.toMap(), depth, seen)
+        val key = EvalKey(expr, snapshot(env), depth, seen)
         memo[key]?.let { return it }
         if (depth > 36 || ++evaluations > evaluationLimit) { truncated = true; return unknown("VALUE_BUDGET_EXCEEDED", context) }
         return evaluate(expr, env, depth, seen).also { memo[key] = it }
@@ -169,6 +185,7 @@ internal class FlowValues(val catalog: Record, private val evaluationLimit: Int 
             "OBJECT" -> record("kind" to "INSTANCE", "identity" to "object:" + expr.string("ref"), "type" to expr["ref"], "fields" to emptyMap<String, Record>())
             "REFERENCE" -> {
                 val ref = expr.string("ref")
+                if (ref == "androidx.activity.compose.LocalActivity") return record("kind" to "COMPOSITION_LOCAL", "identity" to ref)
                 env[ref] ?: env["@receiver"]?.takeIf { ref.endsWith("#param:<this>") } ?: if (ref in seen) unknown("CYCLIC_VALUE", ref) else {
                     val receiver = expr["receiver"].record().takeIf { it.isNotEmpty() }?.let(::next)
                     val field = receiver?.get("fields").record()[expr.string("property")]?.record()
