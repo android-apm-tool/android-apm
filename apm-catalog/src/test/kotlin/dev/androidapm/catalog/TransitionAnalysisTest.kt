@@ -35,6 +35,18 @@ class TransitionAnalysisTest {
         val early = input + record("functionBodies" to input.records("functionBodies").filter { it["owner"] != "Home" } + body("Home", listOf(returning, statement("button"))))
         assertEquals(false, TransitionAnalysis.create(early).report.records("transitions").single().records("guards").single()["expected"])
     }
+    @Test fun `discarded style choices join but assigned callback state remains correlated`() {
+        val base = fixture()
+        val choice = record("kind" to "CHOICE", "choiceGroupId" to "color", "values" to listOf(constant("red"), constant("blue")),
+            "alternatives" to listOf(record("test" to reference("highlighted"), "excluded" to emptyList<Record>(), "value" to constant("red")),
+                record("test" to constant(true), "excluded" to listOf(reference("highlighted")), "value" to constant("blue"))))
+        val input = base + record("callRelations" to base.records("callRelations") + call("style", "androidx.compose.foundation.layout.Box", listOf(argument("color", choice))),
+            "functionBodies" to base.records("functionBodies").filter { it["owner"] != "Home" } + body("Home", listOf(statement("style"), statement("button"))))
+        assertTrue(TransitionAnalysis.create(input).report.records("transitions").single().records("guards").isEmpty())
+        val assigned = input + record("functionBodies" to input.records("functionBodies").filter { it["owner"] != "Home" } + body("Home", listOf(
+            record("op" to "DECLARE", "ref" to "color", "value" to choice), statement("button"))))
+        assertEquals(2, TransitionAnalysis.create(assigned).report.records("transitions").size)
+    }
     @Test fun `incremental argument binding cannot mutate an existing cache key`() {
         val flow = FlowValues(emptyMap(), evaluationLimit = 2)
         val expr = record("kind" to "REFERENCE", "ref" to "argument")

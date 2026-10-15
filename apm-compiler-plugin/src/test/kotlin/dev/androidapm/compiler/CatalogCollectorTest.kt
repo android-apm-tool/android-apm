@@ -12,6 +12,27 @@ import java.nio.file.Path
 import kotlin.io.path.*
 
 class CatalogCollectorTest {
+    @Test fun `public property backing fields match external module references while private fields stay local`() {
+        val library = directory.resolve("Library.kt").apply { writeText("package fixture\nval Shared = Any()\nprivate val Hidden = Any()\nfun hidden() = Hidden") }
+        val consumer = directory.resolve("Consumer.kt").apply { writeText("package fixture\nfun use() = Shared") }
+        val stdlib = Path.of(Unit::class.java.protectionDomain.codeSource.location.toURI()).toString()
+        fun collect(input: Path, module: String, dependency: Path? = null): Record {
+            val report = directory.resolve("$module.json")
+            val args = mutableListOf(input.toString(), "-d", directory.resolve(module).toString(), "-no-stdlib", "-no-reflect", "-jvm-target", "17",
+                "-classpath", stdlib + (dependency?.let { java.io.File.pathSeparator + it } ?: ""), "-Xplugin=" + System.getProperty("apm.test.pluginJar"))
+            mapOf("catalog" to "true", "catalogFile" to report.toString(), "moduleId" to module, "variant" to "debug", "projectRoot" to directory.toString()).forEach { (k,v) -> args += listOf("-P", "plugin:dev.androidapm.compiler:$k=$v") }
+            val log = ByteArrayOutputStream()
+            assertEquals(ExitCode.OK, PrintStream(log).use { K2JVMCompiler().exec(it, *args.toTypedArray()) }, log.toString(Charsets.UTF_8))
+            return Json.decode(report.readText()).record()
+        }
+        val defining = collect(library, "library")
+        val consuming = collect(consumer, "consumer", directory.resolve("library"))
+        val shared = defining.records("values").single { it["ref"] == "fixture.Shared" }
+        assertEquals("FIELD", shared["storage"])
+        assertTrue(defining.records("values").any { it["storage"] == "FIELD" && it.string("ref").startsWith("library:") })
+        val returned = consuming.records("values").single { it["returnOf"] == "fixture.use()" }["value"].record()
+        assertEquals(shared["ref"], returned["ref"])
+    }
     @Test fun `member accessors and their override references have stable qualified symbols`() {
         val catalog = compile("""
             interface Source { val current: String }

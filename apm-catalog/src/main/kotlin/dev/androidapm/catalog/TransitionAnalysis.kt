@@ -143,7 +143,21 @@ object TransitionAnalysis {
             if (!budget(depth)) return listOf(f.copy(uncertain = true, stop = "LIMIT"))
             return when (stmt.string("op")) {
                 "BLOCK" -> stmt.records("statements").fold(listOf(f)) { states, child ->
-                    bounded(states.flatMap { if (it.stop.isNotEmpty()) listOf(it) else walk(child, it.copy(env = it.env.filterKeys { key -> !key.startsWith("@evaluated:") && !key.startsWith("@choice:") }), c, event, seen, depth + 1) })
+                    bounded(states.flatMap { state ->
+                        if (state.stop.isNotEmpty()) listOf(state) else {
+                            fun clean(env: Map<String, Record>) = env.filterKeys { !it.startsWith("@evaluated:") && !it.startsWith("@choice:") }
+                            val before = cutoffs
+                            val input = state.copy(env = clean(state.env))
+                            val paths = walk(child, input, c, event, seen, depth + 1).map { path ->
+                                // A statement's discarded call result and expression-local
+                                // alternatives cannot constrain the next statement.
+                                if (path.stop.isEmpty()) path.copy(env = clean(path.env), value = input.value) else path
+                            }
+                            if (event == null && before == cutoffs && paths.isNotEmpty() && paths.all { it.stop.isEmpty() && it.effects == input.effects } &&
+                                paths.map { it.env }.distinct().size == 1)
+                                listOf(input.copy(env = paths.first().env, uncertain = input.uncertain || paths.any { it.uncertain })) else paths
+                        }
+                    })
                 }
                 "DECLARE", "WRITE" -> expression(stmt["value"].record(), f, c, event, seen, depth + 1).map {
                     it.copy(env = it.env + (stmt.string("ref") to flow.eval(stmt["value"].record(), it.env)))

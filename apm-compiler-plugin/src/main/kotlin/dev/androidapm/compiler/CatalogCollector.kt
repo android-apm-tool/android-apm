@@ -330,7 +330,10 @@ internal class CatalogCollector(
             } else name
             prefix + "(" + declaration.parameters.joinToString(",") { it.type.render() } + ")"
         }
-        is IrField -> if (declaration.parent is IrFile && declaration.visibility == DescriptorVisibilities.PRIVATE)
+        // A public top-level property's backing field is private in its defining
+        // module, but external IR references use the property's qualified name.
+        is IrField -> if (declaration.parent is IrFile &&
+            (declaration.correspondingPropertySymbol?.owner?.visibility ?: declaration.visibility) == DescriptorVisibilities.PRIVATE)
             "$module:${relative(declaration.fileOrNull?.fileEntry?.name ?: file.fileEntry.name)}@${declaration.startOffset}:field"
             else declaration.fqNameWhenAvailable?.asString() ?: "$module:${relative(file.fileEntry.name)}@${declaration.startOffset}:field"
         is IrVariable -> "${(declaration.parent as? IrFunction)?.let(::symbol) ?: module}#local:${declaration.name}@${declaration.startOffset}"
