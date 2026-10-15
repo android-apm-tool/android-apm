@@ -2,7 +2,7 @@ package dev.androidapm.catalog
 
 data class TransitionResult(val report: Record, val evidence: Record)
 
-data class TransitionLimits(val renderVisits: Int = 1_000_000, val eventVisits: Int = 100_000) {
+data class TransitionLimits(val renderVisits: Int = 5_000_000, val eventVisits: Int = 100_000) {
     init { require(renderVisits > 0 && eventVisits > 0) { "TRANSITION_LIMITS_MUST_BE_POSITIVE" } }
 }
 
